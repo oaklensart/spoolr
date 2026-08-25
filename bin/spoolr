@@ -16,6 +16,7 @@
 #   spoolr backup [vault_path]    Archive session keepers to local vault (read-back SHA256)
 #   spoolr reconcile [folder]     Pre-wipe verification (Safe to Format check)
 #   spoolr restore [SES-ID] [dir] Re-download a past session's keepers off the card
+#   spoolr where [SES-ID]         Where each session's frames are: staging/vault/both/neither
 #   spoolr peel [folder]          Extract embedded JPEG previews for Finder tagging
 #   spoolr eject                  Safely unmount active camera card
 #   spoolr config                 Interactive preferences (staging & vault paths)
@@ -127,6 +128,175 @@ fi
 
 sha_file()  { "${SHA_CMD[@]}" "$1" 2>/dev/null | awk '{print $1}'; }
 
+# ── Volume identity ──────────────────────────────────────────────────────────
+# An absolute path silently rots. macOS mounts a second volume named SHOOTS at
+# "/Volumes/SHOOTS 1", and which one wins the bare name depends on plug order —
+# so a ledger row that only remembers /Volumes/SHOOTS/2026 can later point at a
+# different physical drive, or at nothing. Rows therefore also record *volume
+# identity plus a path relative to the mount point*; col 6's absolute path stays
+# untouched as the fallback for every row written before this existed.
+#
+# path -> device -> diskutil is deliberate. `diskutil info <path>` accepts only a
+# mount point or a device node, not an arbitrary path inside a volume, and
+# reading the mount point out of `df` columns breaks on names with spaces
+# ("/Volumes/Photo Drive 2"). `stat -f %Sd` sidesteps both.
+VOL_UUID=""; VOL_NAME=""; VOL_MOUNT=""; VOL_KIND=""
+
+# diskutil costs ~70 ms, and a ledger's sessions overwhelmingly share a handful
+# of volumes — probing 24 rows uncached took 3.3 s, which the dashboard's 4 s
+# poll cannot afford. Cache per device for the life of the process: one command
+# is far too short a window for a drive to appear or vanish underneath us, and
+# the bridge spawns a fresh process per poll, so nothing goes stale.
+# Seeded with a sentinel because bash 3.2 + `set -u` errors on ${#empty[@]}.
+_VC_DEV=("-"); _VC_UUID=("-"); _VC_NAME=("-"); _VC_MOUNT=("-"); _VC_KIND=("-")
+_VU_UUID=("-"); _VU_MP=("-")
+
+vol_probe() {
+  VOL_UUID=""; VOL_NAME=""; VOL_MOUNT=""; VOL_KIND=""
+  local p="${1:-}" dev info i
+  [ -n "$p" ] && [ -e "$p" ] || return 1
+  dev="$(stat -f '%Sd' "$p" 2>/dev/null || true)"
+  [ -n "$dev" ] || return 1
+  for (( i=0; i<${#_VC_DEV[@]}; i++ )); do
+    if [ "${_VC_DEV[$i]}" = "$dev" ]; then
+      VOL_UUID="${_VC_UUID[$i]}"; VOL_NAME="${_VC_NAME[$i]}"
+      VOL_MOUNT="${_VC_MOUNT[$i]}"; VOL_KIND="${_VC_KIND[$i]}"
+      return 0
+    fi
+  done
+  info="$(diskutil info "/dev/$dev" 2>/dev/null || true)"
+  if [ -z "$info" ]; then
+    # Not a diskutil-managed device — SMB/AFP/NFS shares have no stable volume
+    # UUID to record, so they keep the absolute path and are merely labelled.
+    VOL_KIND="network"
+    VOL_NAME="$(df -P "$p" 2>/dev/null | awk 'NR==2{print $1}')"
+    _vol_cache_put "$dev"
+    return 0
+  fi
+  # sed, not awk -F': ', because a mount point may itself contain ": ".
+  VOL_UUID="$(printf '%s\n' "$info" | sed -n 's/^ *Volume UUID: *//p'  | head -1)"
+  VOL_NAME="$(printf '%s\n' "$info" | sed -n 's/^ *Volume Name: *//p'  | head -1)"
+  VOL_MOUNT="$(printf '%s\n' "$info" | sed -n 's/^ *Mount Point: *//p' | head -1)"
+  local proto loc
+  proto="$(printf '%s\n' "$info" | sed -n 's/^ *Protocol: *//p'        | head -1)"
+  loc="$(printf '%s\n' "$info"   | sed -n 's/^ *Device Location: *//p' | head -1)"
+  case "$proto" in
+    USB*) VOL_KIND="usb" ;;
+    *)    case "$loc" in
+            Internal*) VOL_KIND="internal" ;;
+            *)         VOL_KIND="external" ;;
+          esac ;;
+  esac
+  _vol_cache_put "$dev"
+  return 0
+}
+
+_vol_cache_put() {
+  _VC_DEV+=("$1");        _VC_UUID+=("$VOL_UUID"); _VC_NAME+=("$VOL_NAME")
+  _VC_MOUNT+=("$VOL_MOUNT"); _VC_KIND+=("$VOL_KIND")
+}
+
+# Mount point of a volume named by UUID, or empty when it is not attached.
+_vol_mount_for_uuid() {
+  local u="$1" i mp
+  for (( i=0; i<${#_VU_UUID[@]}; i++ )); do
+    if [ "${_VU_UUID[$i]}" = "$u" ]; then printf '%s' "${_VU_MP[$i]}"; return 0; fi
+  done
+  mp="$(diskutil info "$u" 2>/dev/null | sed -n 's/^ *Mount Point: *//p' | head -1)"
+  _VU_UUID+=("$u"); _VU_MP+=("$mp")
+  printf '%s' "$mp"
+}
+
+# Physical path, with symlinked prefixes resolved. Needed because a mount point
+# is always physical while a user-facing path may not be: /var is a symlink to
+# private/var, so "/var/x" is really on the Data volume at "private/var/x" and
+# the naive relative form would not resolve. `cd -P` keeps this dependency-free.
+_abs_real() {
+  local p="${1:-}"
+  if [ -d "$p" ]; then (cd -P "$p" 2>/dev/null && pwd -P) || printf '%s' "$p"
+  elif [ -e "$p" ]; then
+    local d b; d="$(dirname "$p")"; b="$(basename "$p")"
+    d="$( (cd -P "$d" 2>/dev/null && pwd -P) || printf '%s' "$d" )"
+    printf '%s/%s' "$d" "$b"
+  else printf '%s' "$p"; fi
+}
+
+# Path relative to VOL_MOUNT, verified by resolving it back. Failure means "this
+# path cannot be expressed against that mount point", and the caller must then
+# record no volume identity at all rather than a rel_path that does not resolve.
+vol_rel_path() {
+  local p mp="$VOL_MOUNT" cand
+  p="$(_abs_real "${1:-}")"
+  [ -n "$p" ] || return 1
+  [ -n "$mp" ] || return 1
+  # Two candidate forms, each accepted only if it actually resolves back to the
+  # same place. The second exists for the boot volume: /Users/... is a firmlink
+  # onto the Data volume, whose mount point is /System/Volumes/Data, so the
+  # literal prefix never matches even though the file is genuinely on it.
+  for cand in "${p#"$mp"/}" "${p#/}"; do
+    if [ -n "$cand" ] && [ "$cand" != "$p" ] && [ -e "$mp/$cand" ]; then
+      printf '%s' "$cand"; return 0
+    fi
+  done
+  return 1
+}
+
+_untab() { printf '%s' "${1//$'\t'/ }"; }
+
+# The tagged ledger fields for a path, each preceded by a tab, or nothing at all
+# when identity could not be established. Values are tab-scrubbed so a volume
+# named with a tab can never split a ledger row.
+vol_tags() {
+  local p="${1:-}" rel
+  vol_probe "$p" || return 0
+  [ -n "$VOL_UUID" ] || return 0
+  rel="$(vol_rel_path "$p")" || return 0
+  printf '\tvol_uuid=%s\tvol_name=%s\trel_path=%s\tvol_kind=%s' \
+    "$(_untab "$VOL_UUID")" "$(_untab "$VOL_NAME")" "$(_untab "$rel")" "$(_untab "$VOL_KIND")"
+}
+
+# Value of one key=value field among a ledger row's trailing columns. The CLI
+# reads those columns into a single variable (bash `read` gives the last name
+# every remaining field), so they arrive tab-joined. Mirrors tagged_field() in
+# server/bridge.py.
+ledger_tag() {
+  local blob="${1:-}" key="${2:-}" f
+  local IFS=$'\t'
+  for f in $blob; do
+    case "$f" in "$key"=*) printf '%s' "${f#"$key"=}"; return 0 ;; esac
+  done
+  return 1
+}
+
+# Current path of a recorded session. Prints the path and returns:
+#   0  resolved — the volume is mounted and this path is on it
+#   1  the volume is recorded but not currently mounted  -> NOT an alarm
+# Rows written before volume identity existed carry no uuid and simply get their
+# absolute path back, which is why col 6 is never rewritten.
+#
+# The recorded absolute path is preferred *only after* confirming it still sits
+# on the recorded volume. Existence alone is not enough and trusting it would
+# reintroduce the exact bug this thread exists to fix: mount a different drive
+# also named SHOOTS and /Volumes/SHOOTS/2026 still resolves — to someone else's
+# frames. When it does check out it is the better answer, because it is the path
+# the user actually knows (/Users/me/... rather than /System/Volumes/Data/...).
+# Sets VOL_RESOLVED rather than printing, and that is deliberate: `$(...)` runs
+# in a subshell, so a printing version threw away the volume cache on every call
+# and each session paid its own diskutil — 3.3 s for 24 rows instead of 0.4 s.
+VOL_RESOLVED=""
+vol_resolve() {
+  local uuid="${1:-}" rel="${2:-}" fallback="${3:-}" mp
+  VOL_RESOLVED="$fallback"
+  [ -n "$uuid" ] || return 0
+  if [ -n "$fallback" ] && [ -e "$fallback" ]; then
+    if vol_probe "$fallback" && [ "$VOL_UUID" = "$uuid" ]; then return 0; fi
+  fi
+  mp="$(_vol_mount_for_uuid "$uuid")"
+  [ -n "$mp" ] || return 1
+  if [ -n "$rel" ]; then VOL_RESOLVED="$mp/$rel"; else VOL_RESOLVED="$mp"; fi
+  return 0
+}
+
 # Validated interactive numeric choice. Refuses to guess: on a bad or missing
 # answer it re-asks; with no terminal (or SPOOLR_ASSUME_YES) it fails loudly
 # rather than silently picking something.
@@ -193,7 +363,12 @@ EOF
 }
 
 load_config
-mkdir -p "$STAGING_ROOT"
+# Best-effort, never fatal. Staging may live on a drive that is not plugged in
+# right now, and that is a normal state this tool must be able to *report* — if
+# creating it at load could kill the process, `spoolr where` could never tell
+# you your frames are simply on a volume you have not connected. Commands that
+# actually need to write into staging fail loudly at the point they try.
+mkdir -p "$STAGING_ROOT" 2>/dev/null || true
 
 # ── Cleanup: single trap, tracks any temp files we create ──
 TMP_FILES=()
@@ -434,7 +609,10 @@ create_session_dir() {
   fi
   CURRENT_SESSION_ID="$sid"
   CURRENT_SESSION_DIR="$STAGING_ROOT/$dirname"
-  mkdir -p "$CURRENT_SESSION_DIR"
+  # This one IS fatal, and says why: staging being unreachable is fine to report
+  # but never fine to spool into.
+  mkdir -p "$CURRENT_SESSION_DIR" 2>/dev/null || \
+    die "Cannot write to staging at $STAGING_ROOT — is that drive connected and writable?"
 }
 
 # ── Manifest helpers ──────────────────────────────────────────
@@ -618,8 +796,12 @@ run_spool() {
 
   # Append to durable ledger:
   # timestamp \t session_id \t card_id \t shoot_dates \t frames \t staging_path \t status
-  printf "%s\t%s\t%s\t%s\t%s\t%s\tPENDING\n" \
-    "$(date +'%Y-%m-%d %H:%M:%S')" "$CURRENT_SESSION_ID" "$CARD_ID" "$dates" "$copied" "$CURRENT_SESSION_DIR" >> "$LEDGER"
+  # Columns 8+ are tagged key=value fields, each independent of the others. The
+  # volume tags let this row still be found after the drive is remounted under a
+  # different name; col 6 stays the plain absolute path either way.
+  printf "%s\t%s\t%s\t%s\t%s\t%s\tPENDING%s\n" \
+    "$(date +'%Y-%m-%d %H:%M:%S')" "$CURRENT_SESSION_ID" "$CARD_ID" "$dates" "$copied" \
+    "$CURRENT_SESSION_DIR" "$(vol_tags "$CURRENT_SESSION_DIR")" >> "$LEDGER"
 
   run_peel "$CURRENT_SESSION_DIR"
 
@@ -1176,9 +1358,9 @@ run_restore() {
   # back on disk but they are NOT in a vault, so this session must not read as
   # safe to format. Column 8+ carries tagged key=value fields so later columns
   # can be added independently of each other.
-  printf "%s\t%s\t%s\t%s\t%s\t%s\tRESTORED\trestored_from=%s\n" \
+  printf "%s\t%s\t%s\t%s\t%s\t%s\tRESTORED\trestored_from=%s%s\n" \
     "$(date +'%Y-%m-%d %H:%M:%S')" "$CURRENT_SESSION_ID" "$CARD_ID" "$l_dates" \
-    "$done_n" "$CURRENT_SESSION_DIR" "$l_sid" >> "$LEDGER"
+    "$done_n" "$CURRENT_SESSION_DIR" "$l_sid" "$(vol_tags "$CURRENT_SESSION_DIR")" >> "$LEDGER"
 
   # NB: the rolling watermark is deliberately NOT advanced. A restore re-reads
   # old frames; it is not a pull of new ones, and moving the watermark here
@@ -1284,12 +1466,127 @@ run_volumes() {
     free=$(df -Ph "$v" 2>/dev/null | awk 'NR==2{print $4}')
     label=$(basename "$v")
     [ -d "$v/DCIM" ] && has_dcim=true   # likely a camera card — flag it, don't hide it
+    # The UUID lets the dashboard match a session's recorded volume to a drive
+    # that is actually plugged in right now, whatever it is currently called.
+    vol_probe "$v" || true
     [ "$first" = 1 ] || printf ','
     first=0
-    printf '{"path":"%s","label":"%s","free":"%s","is_card":%s}' \
-      "$(json_escape "$v")" "$(json_escape "$label")" "$(json_escape "${free:-?}")" "$has_dcim"
+    printf '{"path":"%s","label":"%s","free":"%s","is_card":%s,"vol_uuid":"%s","vol_kind":"%s"}' \
+      "$(json_escape "$v")" "$(json_escape "$label")" "$(json_escape "${free:-?}")" "$has_dcim" \
+      "$(json_escape "$VOL_UUID")" "$(json_escape "$VOL_KIND")"
   done
   printf ']\n'
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 9c. WHERE — which copies of a session still exist, and on what
+# ═══════════════════════════════════════════════════════════════
+# The question the ledger could never answer before volume identity: for each
+# session, do the RAWs live in staging, in the vault, in both, or in NEITHER?
+# Only "neither" is an alarm. "The drive holding them is simply not plugged in
+# right now" is a normal, calm answer, and telling the two apart is the entire
+# point of recording a volume UUID instead of trusting a path.
+
+# Does this session have a vault copy on disk? Prints present/total keepers.
+_where_vault_count() {
+  local sid="$1"
+  [ -s "$BACKUP_INDEX" ] || { printf '0 0'; return; }
+  awk -F'\t' -v s="$sid" '$1==s{t++; if(system("[ -f \"" $4 "\" ]")==0) p++} END{printf "%d %d", p+0, t+0}' "$BACKUP_INDEX"
+}
+
+# One session's location report. Sets W_* rather than printing, so both the
+# human view and the JSON view below are built from exactly the same answer.
+W_STAGE="" W_STAGE_PATH="" W_VAULT="" W_VAULT_N=0 W_VAULT_T=0 W_VOL="" W_VOL_NAME="" W_VOL_KIND="" W_PLACE=""
+_where_session() {
+  local sid="$1" dir="$2" tags="$3" uuid rel resolved raws rc=0
+  uuid="$(ledger_tag "$tags" vol_uuid || true)"
+  rel="$(ledger_tag "$tags" rel_path  || true)"
+  W_VOL_NAME="$(ledger_tag "$tags" vol_name || true)"
+  W_VOL_KIND="$(ledger_tag "$tags" vol_kind || true)"
+
+  # `|| rc=$?`, never a bare call: an unmounted volume is a normal answer, and
+  # under `set -e` a non-zero return would otherwise kill the process.
+  vol_resolve "$uuid" "$rel" "$dir" || rc=$?
+  resolved="$VOL_RESOLVED"
+  W_STAGE_PATH="$resolved"
+  if [ "$rc" != 0 ]; then
+    # Recorded, identifiable, simply not attached. Not a loss.
+    W_VOL="unmounted"; W_STAGE="offline"
+  else
+    W_VOL="mounted"
+    if [ -d "$resolved" ]; then
+      # find_raws is null-delimited, so count NULs — `wc -l` reports 0 here and
+      # would report a present session as NOWHERE, the one lie this must not tell.
+      raws=$(find_raws "$resolved" -maxdepth 1 2>/dev/null | tr -cd '\0' | wc -c | tr -d ' ')
+      if [ "${raws:-0}" -gt 0 ]; then W_STAGE="present"; else W_STAGE="empty"; fi
+    else
+      W_STAGE="gone"
+    fi
+  fi
+
+  read -r W_VAULT_N W_VAULT_T <<< "$(_where_vault_count "$sid")"
+  if   [ "$W_VAULT_T" = 0 ];             then W_VAULT="none"
+  elif [ "$W_VAULT_N" = "$W_VAULT_T" ];  then W_VAULT="present"
+  elif [ "$W_VAULT_N" = 0 ];             then W_VAULT="gone"
+  else                                        W_VAULT="partial"; fi
+
+  # The headline. "offline" staging is deliberately not counted as a copy we can
+  # see, but it is also not counted as lost — it gets its own word.
+  if   [ "$W_STAGE" = "present" ] && [ "$W_VAULT" = "present" ]; then W_PLACE="both"
+  elif [ "$W_STAGE" = "present" ];                                then W_PLACE="staging"
+  elif [ "$W_VAULT" = "present" ] || [ "$W_VAULT" = "partial" ];  then W_PLACE="vault"
+  elif [ "$W_STAGE" = "offline" ];                                then W_PLACE="offline"
+  else                                                                 W_PLACE="neither"; fi
+}
+
+run_where() {
+  local as_json=0 want="" a
+  for a in "$@"; do
+    case "$a" in
+      --json) as_json=1 ;;
+      "") ;;
+      *) want="$a" ;;
+    esac
+  done
+  [ -s "$LEDGER" ] || { [ "$as_json" = 1 ] && printf '[]\n' || echo "  No sessions on record."; return 0; }
+
+  local l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest first=1
+  [ "$as_json" = 1 ] && printf '['
+  [ "$as_json" = 1 ] || { echo ""; echo -e "  ${BOLD}WHERE YOUR FRAMES ARE${NC}"; echo ""; }
+
+  while IFS=$'\t' read -r l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest || [ -n "${l_ts:-}" ]; do
+    case "$l_sid" in SES-*) ;; *) continue ;; esac
+    [ -n "$want" ] && [ "$l_sid" != "$want" ] && continue
+    _where_session "$l_sid" "$l_dir" "${l_rest:-}"
+    if [ "$as_json" = 1 ]; then
+      [ "$first" = 1 ] || printf ','
+      first=0
+      printf '{"id":"%s","card":"%s","place":"%s","staging":"%s","staging_path":"%s","vault":"%s","vault_present":%s,"vault_total":%s,"volume":"%s","vol_name":"%s","vol_kind":"%s"}' \
+        "$(json_escape "$l_sid")" "$(json_escape "$l_card")" "$W_PLACE" "$W_STAGE" \
+        "$(json_escape "$W_STAGE_PATH")" "$W_VAULT" "${W_VAULT_N:-0}" "${W_VAULT_T:-0}" \
+        "$W_VOL" "$(json_escape "$W_VOL_NAME")" "$(json_escape "$W_VOL_KIND")"
+    else
+      local mark col detail
+      case "$W_PLACE" in
+        both)    mark="✓"; col="$GREEN";  detail="staging + vault" ;;
+        vault)   mark="✓"; col="$GREEN";  detail="vault only ($W_VAULT_N/$W_VAULT_T keepers)" ;;
+        staging) mark="○"; col="$YELLOW"; detail="staging only — not archived" ;;
+        offline) mark="·"; col="$GRAY";   detail="on ${W_VOL_NAME:-a volume} — not plugged in" ;;
+        neither) mark="✗"; col="$RED";    detail="NOWHERE — no copy this tool can see" ;;
+      esac
+      printf "  ${col}%s${NC} %-9s ${GRAY}%-8s${NC} %b%s%b\n" \
+        "$mark" "$l_sid" "$l_card" "$col" "$detail" "$NC"
+      if [ "$W_PLACE" = "offline" ]; then
+        echo -e "      ${GRAY}${W_VOL_KIND:-volume} \"$W_VOL_NAME\" — reconnect it to check${NC}"
+      fi
+    fi
+  done < "$LEDGER"
+
+  if [ "$as_json" = 1 ]; then printf ']\n'; else
+    echo ""
+    echo -e "  ${GRAY}Only ✗ is a loss. A volume that is merely unplugged is not.${NC}"
+    echo ""
+  fi
 }
 
 run_set_vault() {
@@ -1485,6 +1782,7 @@ main() {
     doctor)       run_doctor ;;
     probe)        run_probe ;;
     volumes)      run_volumes ;;
+    where)        shift || true; run_where "$@" ;;
     set-vault)    shift || true; run_set_vault "${1:-}" ;;
     reset)        shift || true; run_reset "$@" ;;
     version|--version|-v) echo "spoolr v$VERSION" ;;
@@ -1528,6 +1826,7 @@ main() {
       echo "  spoolr reconcile [folder]     Pre-wipe verification (Safe to Format verdict)"
       echo "  spoolr restore [SES-ID] [dir] Re-download a past session's keepers off the card"
       echo "  spoolr restore --dry-run      Report what is still recoverable, copy nothing"
+      echo "  spoolr where [SES-ID]         Where your frames are: staging / vault / both / neither"
       echo "  spoolr peel [folder]          Extract embedded JPEG previews for fast Finder tagging"
       echo "  spoolr eject                  Safely unmount active camera SD card"
       echo "  spoolr config                 Configure staging and backup vault directories"

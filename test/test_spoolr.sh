@@ -207,6 +207,96 @@ mv "$ROOT/parked3" "$RC"; rm -rf "$OC"
 
 rm -rf "$RC"; mv "$ROOT/parked2" "$CARD"          # hand the rig back to ALPHA
 
+say "VOLUME IDENTITY: rows record volume UUID + relative path, col 6 unchanged"
+VROW="$(awk -F'\t' '$2=="SES-001"{print; exit}' "$SPOOLR_CONFIG_DIR/ledger.tsv")"
+ck "row carries vol_uuid=" 'echo "$VROW" | grep -q "vol_uuid="'
+ck "row carries rel_path=" 'echo "$VROW" | grep -q "rel_path="'
+ck "row carries vol_kind=" 'echo "$VROW" | grep -q "vol_kind="'
+# Col 6 must stay a plain absolute path: the bridge's reveal handler and every
+# pre-existing row depend on it, and short rows must keep working.
+ck "col 6 is still an absolute path" '[ "$(echo "$VROW" | cut -f6 | cut -c1)" = "/" ]'
+ck "col 7 is still the status" 'echo "$VROW" | cut -f7 | grep -qE "PENDING|VERIFIED|RESTORED"'
+
+say "VOLUME IDENTITY: a row with no volume tags still resolves (backward compat)"
+# Exactly the shape every row written before this thread existed: 7 columns.
+mkdir -p "$ROOT/oldstyle"; head -c 4000 /dev/urandom > "$ROOT/oldstyle/OLD1.RW2"
+printf '2020-01-01 00:00:00\tSES-900\tALPHA\t2020-01-01\t1\t%s\tPENDING\n' "$ROOT/oldstyle" >> "$SPOOLR_CONFIG_DIR/ledger.tsv"
+OLDJ="$("$ING" where --json SES-900 2>/dev/null)"
+ck "untagged row is found" 'echo "$OLDJ" | grep -q "SES-900"'
+ck "untagged row resolves via its absolute path" 'echo "$OLDJ" | grep -q "\"place\":\"staging\""'
+
+say "WHERE: staging / vault / both / neither"
+# The indicator the brief proposed: only "neither" is a loss.
+mkdir -p "$ROOT/wtest"; head -c 4000 /dev/urandom > "$ROOT/wtest/W1.RW2"
+printf '2020-01-02 00:00:00\tSES-901\tALPHA\t2020-01-02\t1\t%s\tPENDING\n' "$ROOT/wtest" >> "$SPOOLR_CONFIG_DIR/ledger.tsv"
+wplace(){ "$ING" where --json "$1" 2>/dev/null | sed -n 's/.*"place":"\([a-z]*\)".*/\1/p'; }
+ck "staged only reads staging" '[ "$(wplace SES-901)" = "staging" ]'
+mkdir -p "$ROOT/wvault"; cp "$ROOT/wtest/W1.RW2" "$ROOT/wvault/W1.RW2"
+printf 'SES-901\tW1.RW2\t%s\t%s\t2020-01-02T00:00:00Z\n' \
+  "$(/usr/bin/shasum -a 256 "$ROOT/wvault/W1.RW2" | awk '{print $1}')" "$ROOT/wvault/W1.RW2" >> "$SPOOLR_CONFIG_DIR/backups.tsv"
+ck "staged + vaulted reads both" '[ "$(wplace SES-901)" = "both" ]'
+mv "$ROOT/wtest" "$ROOT/wtest.parked"
+ck "vault only reads vault" '[ "$(wplace SES-901)" = "vault" ]'
+rm -f "$ROOT/wvault/W1.RW2"
+ck "neither copy left reads neither" '[ "$(wplace SES-901)" = "neither" ]'
+mv "$ROOT/wtest.parked" "$ROOT/wtest"
+
+say "VOLUME IDENTITY: a real volume, unplugged and remounted elsewhere"
+# hdiutil is a macOS built-in, so this stays dependency-free. If image creation
+# is not permitted in this environment the cases are skipped, never failed —
+# a red suite must mean broken code, not a sandbox without disk images.
+DMG="$ROOT/vol.dmg"; VMP=""
+if hdiutil create -size 20m -fs "HFS+" -volname "SPOOLR TESTVOL" "$DMG" >/dev/null 2>&1 \
+   && hdiutil attach "$DMG" >/dev/null 2>&1 && [ -d "/Volumes/SPOOLR TESTVOL" ]; then
+  VMP="/Volumes/SPOOLR TESTVOL"
+  mkdir -p "$VMP/Shoots"
+  mv "$CARD" "$ROOT/parkedV"                       # exactly one card for this pull
+  VC="$ROOT/volumes/VOLTEST"; mkdir -p "$VC/DCIM/1"; echo VOLTEST > "$VC/.card_id"
+  head -c 9000 /dev/urandom > "$VC/DCIM/1/V1.RW2"
+  cp "$SPOOLR_CONFIG_DIR/config.conf" "$ROOT/conf.bak" 2>/dev/null || true
+  printf '# SPOOLR User Preferences\nSTAGING_ROOT="%s/Shoots"\nVAULT_ROOT=""\n' "$VMP" > "$SPOOLR_CONFIG_DIR/config.conf"
+  "$ING" --today >/dev/null 2>&1
+  VSID="$(awk -F'\t' '$3=="VOLTEST"{v=$2} END{print v}' "$SPOOLR_CONFIG_DIR/ledger.tsv")"
+  VABS="$(awk -F'\t' -v s="$VSID" '$2==s{print $6}' "$SPOOLR_CONFIG_DIR/ledger.tsv")"
+  ck "session staged onto the external volume" '[ -n "$VSID" ] && [ -d "$VABS" ]'
+  ck "mounted volume reads staging" '[ "$(wplace "$VSID")" = "staging" ]'
+
+  hdiutil detach "$VMP" >/dev/null 2>&1
+  # The whole point: unplugged is a calm, distinct answer, not a loss.
+  ck "unplugged reads offline, NOT neither" '[ "$(wplace "$VSID")" = "offline" ]'
+  ck "the tool still runs at all with staging unplugged" '"$ING" where >/dev/null 2>&1'
+
+  # An impostor: a different physical volume, same name, same folder layout,
+  # mounted at the exact path the ledger recorded. Trusting the path would hand
+  # back someone else's frames; the UUID is what refuses.
+  if hdiutil create -size 20m -fs "HFS+" -volname "SPOOLR TESTVOL" "$ROOT/imp.dmg" >/dev/null 2>&1 \
+     && hdiutil attach "$ROOT/imp.dmg" >/dev/null 2>&1 && [ -d "/Volumes/SPOOLR TESTVOL" ]; then
+    mkdir -p "$VABS" && head -c 9000 /dev/urandom > "$VABS/IMPOSTOR.RW2"
+    ck "same-named impostor volume is NOT accepted" '[ "$(wplace "$VSID")" = "offline" ]'
+    hdiutil detach "/Volumes/SPOOLR TESTVOL" >/dev/null 2>&1
+  else
+    echo "  NOTE: impostor-volume case skipped (second disk image unavailable)"
+  fi
+
+  # Remount the real one somewhere completely different, with a space in the
+  # path, and it must still be found — by UUID, not by name.
+  mkdir -p "$ROOT/elsewhere"
+  if hdiutil attach "$DMG" -mountpoint "$ROOT/elsewhere/MOVED DRIVE" >/dev/null 2>&1; then
+    ck "remounted at a new path, resolves again" '[ "$(wplace "$VSID")" = "staging" ]'
+    NEWP="$("$ING" where --json "$VSID" 2>/dev/null | sed -n 's/.*"staging_path":"\([^"]*\)".*/\1/p')"
+    ck "resolved path follows the volume, not the old name" 'case "$NEWP" in *"MOVED DRIVE"*) true ;; *) false ;; esac'
+    ck "the recorded absolute path is genuinely stale" '[ ! -d "$VABS" ]'
+    hdiutil detach "$ROOT/elsewhere/MOVED DRIVE" >/dev/null 2>&1
+  else
+    echo "  NOTE: remount case skipped (could not attach at a custom mountpoint)"
+  fi
+
+  cp "$ROOT/conf.bak" "$SPOOLR_CONFIG_DIR/config.conf" 2>/dev/null || true
+  rm -rf "$VC"; mv "$ROOT/parkedV" "$CARD"
+else
+  echo "  NOTE: external-volume cases skipped (hdiutil disk image unavailable here)"
+fi
+
 say "reset clears tool data but preserves foreign config data"
 printf 'my cold storage index\n' > "$SPOOLR_CONFIG_DIR/coldstore.tsv"   # foreign file
 printf '2020-01-01\tAlpha\t2020-01-01\t9 frames\n' >> "$SPOOLR_CONFIG_DIR/ledger.tsv"  # foreign row
@@ -216,6 +306,9 @@ ck "foreign (non-SES) ledger row preserved" 'grep -q Alpha "$SPOOLR_CONFIG_DIR/l
 ck "our SES- session rows cleared" '[ "$(grep -c "	SES-" "$SPOOLR_CONFIG_DIR/ledger.tsv")" = 0 ]'
 ck "backup index cleared" '[ ! -s "$SPOOLR_CONFIG_DIR/backups.tsv" ]'
 ck "reset kept staged photos on disk (no --purge)" '[ -n "$(find "$HOME/Pictures/Spoolr" -iname "*.RW2" 2>/dev/null | head -1)" ]'
+
+hdiutil detach "/Volumes/SPOOLR TESTVOL" >/dev/null 2>&1 || true
+hdiutil detach "$ROOT/elsewhere/MOVED DRIVE" >/dev/null 2>&1 || true
 
 printf '\nRESULT: %d passed, %d failed\n' "$pass" "$fail"
 rm -rf "$ROOT"

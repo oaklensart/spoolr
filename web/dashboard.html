@@ -352,6 +352,23 @@
     .ses-meta { color: var(--text-dim); font-weight: 400; }
     .ses-card.gone { opacity: 0.6; }
     .ses-card.gone .ses-data { color: var(--text-dim); }
+    /* A session on a drive that simply isn't plugged in. Deliberately quieter
+       than .gone and with no alarm colour: nothing is lost, so nothing here
+       should read as a warning. */
+    .ses-card.offline { opacity: 0.5; }
+    .ses-card.offline .ses-data { color: var(--text-dim); }
+    /* Where the frames physically are. Always a glyph AND a word — location is
+       never carried by colour alone. */
+    .ses-loc {
+      display: flex; align-items: center; gap: 0.3rem;
+      font-family: var(--font-mono); font-size: 0.62rem; letter-spacing: 0.06em;
+      color: var(--text-dim); font-weight: 400;
+      border-top: 1px solid var(--border-dim); padding-top: 0.55rem; margin-top: -0.5rem;
+    }
+    .ses-loc.safe { color: var(--ok); }
+    .ses-loc.warn { color: var(--warn); }
+    .ses-loc.lost { color: var(--danger); font-weight: 700; }
+    .ses-loc .lg { font-size: 0.75rem; line-height: 1; }
     /* A lost session whose frames may still be on the card. This is the one
        state where a session card is not a dead end, so it gets the only
        affordance that outranks the card's own identity colour. */
@@ -1246,7 +1263,8 @@
         return;
       }
       cnt.textContent = list.length + ' session' + (list.length > 1 ? 's' : '');
-      const sig = list.map(s => [s.id, s.status, s.backed, s.jpgs, s.raws, s.color, s.exists, s.restore_src].join('~')).join('|');
+      const sig = list.map(s => [s.id, s.status, s.backed, s.jpgs, s.raws, s.color, s.exists,
+                                 s.restore_src, s.place, s.vol_mounted].join('~')).join('|');
       if (root.dataset.sig === sig) return;      // nothing changed — keep the DOM
       root.dataset.sig = sig;
 
@@ -1264,10 +1282,15 @@
         // A missing folder is only a dead end if nothing can rebuild its frame
         // list. When something can, the card stops being an epitaph and offers
         // the one action that still helps: pull the frames off the card again.
-        const recoverable = gone && !!s.restore_src;
+        // "The drive isn't plugged in" is not a loss, so it must not wear the
+        // lost-session styling and must not offer recovery — re-pulling frames
+        // off the card to rescue a session that is sitting safe on a shelf is
+        // the wrong answer to the wrong question.
+        const offline = s.place === 'offline';
+        const recoverable = gone && !offline && !!s.restore_src;
         const c = document.createElement('div');
-        c.className = 'ses-card' + (gone ? ' gone' : '') + (verified ? ' verified' : '')
-                    + (recoverable ? ' recoverable' : '');
+        c.className = 'ses-card' + (gone && !offline ? ' gone' : '') + (offline ? ' offline' : '')
+                    + (verified ? ' verified' : '') + (recoverable ? ' recoverable' : '');
         c.style.animationDelay = (RM ? 0 : i * 0.06) + 's';
         // Pin this card's own colour locally so it survives interface re-themes.
         const pal = PALETTE[s.color];
@@ -1275,16 +1298,31 @@
 
         // RAWs are the irreplaceable part. Missing JPEGs are almost always an
         // intentional cull, so they never raise an alarm on their own.
-        const rawsGone = gone && !backed;
-        const foot = gone
-          ? (backed ? 'in vault · folder moved' : '⚠ folder missing')
+        const rawsGone = gone && !offline && !backed;
+        const foot = offline ? 'drive not connected'
+          : gone ? (backed ? 'in vault · folder moved' : '⚠ folder missing')
           : (esc(String(s.jpgs)) + ' JPG');
+
+        // Where the RAWs actually are right now. Only "nowhere" is an alarm.
+        const LOC = {
+          both:    ['⛁', 'STAGING + VAULT',  'safe'],
+          vault:   ['⛁', 'VAULT',            'safe'],
+          staging: ['▤', 'STAGING ONLY',     'warn'],
+          offline: ['⏏', 'ON ' + String(s.vol_name || 'A DRIVE').toUpperCase(), ''],
+          neither: ['✗', 'NOWHERE',          'lost'],
+        };
+        const loc = LOC[s.place];
 
         c.innerHTML = `<div class="ses-head"><span class="ses-date">${esc((s.date || '').split(',')[0])}</span><span class="ses-card-tag">${esc(s.card || '—')}</span></div>
           <div class="ses-data">${esc(String(s.frames))} <small>RAWs</small></div>
           <div class="ses-foot"><span class="chip" style="color:${rawsGone ? 'var(--danger)' : col}"><span class="cd" style="background:${rawsGone ? 'var(--danger)' : col}"></span>${rawsGone ? '⚠ UNVERIFIED' : txt}</span>
-          <span class="ses-meta">${esc(s.id)} · ${foot}</span></div>`;
-        c.title = gone ? (s.path || '') + ' — folder no longer at this path' : 'Open ' + (s.path || '') + ' in Finder';
+          <span class="ses-meta">${esc(s.id)} · ${foot}</span></div>` +
+          (loc ? `<div class="ses-loc ${loc[2]}"><span class="lg">${loc[0]}</span>${esc(loc[1])}</div>` : '');
+        c.title = offline
+          ? (s.vol_name ? '"' + s.vol_name + '" is not connected — reconnect it to open this session'
+                        : 'That drive is not connected')
+          : gone ? (s.path || '') + ' — folder no longer at this path'
+          : 'Open ' + (s.live_path || s.path || '') + ' in Finder';
         c.onclick = () => openSession(s);
         if (recoverable) {
           const b = document.createElement('button');
@@ -1396,6 +1434,13 @@
 
     async function openSession(s) {
       if (!LIVE) { toast('Opening folders needs the live bridge'); return; }
+      // Checked before `exists`, which is false for an unplugged drive too.
+      // Offering to re-pull frames off the card here would be alarming and
+      // wrong: nothing is missing, the disk is just in a bag.
+      if (s.place === 'offline') {
+        toast('⏏ ' + (s.vol_name ? '"' + s.vol_name + '"' : 'That drive') + ' is not connected — reconnect it to open this session');
+        return;
+      }
       if (s.exists === false) {
         if (s.restore_src) { openRecovery(s); return; }
         toast(s.backed || s.status === 'VERIFIED'

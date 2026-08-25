@@ -109,6 +109,18 @@ def list_volumes():
     return _run_json(["volumes"], [])
 
 
+def where_map():
+    """Per-session location report, keyed by session id, via `spoolr where`.
+
+    One subprocess per poll rather than resolving volumes in Python: the CLI
+    already owns this answer, and duplicating volume resolution here would give
+    the dashboard a second implementation to drift out of step with — the same
+    trap restore_source() below is written to avoid.
+    """
+    rows = _run_json(["where", "--json"], [])
+    return {r.get("id"): r for r in rows if isinstance(r, dict) and r.get("id")}
+
+
 def fmt_relative(iso_ts):
     """'2 days ago' style label from an ISO-8601 UTC timestamp; passthrough on parse failure."""
     if not iso_ts or iso_ts == "No backups yet":
@@ -264,11 +276,14 @@ def get_full_state():
     ledger_rows = parse_tsv(CONFIG_DIR / "ledger.tsv")
     colors = card_colors()
     backed_at = backup_times()
+    where = where_map()
     sessions = []
     for r in reversed(ledger_rows):
         if len(r) >= 6 and r[1].startswith("SES-"):
             staging_path = r[5]
-            raws, jpgs, backed = session_scan(staging_path)
+            w = where.get(r[1], {})
+            # Scan where the session actually is now, not where it was recorded.
+            raws, jpgs, backed = session_scan(w.get("staging_path") or staging_path)
             card = r[2]
             sessions.append({
                 "id": r[1],
@@ -284,11 +299,21 @@ def get_full_state():
                 # Columns 8+ are tagged key=value fields so each can be added
                 # independently of the others (see the restore + volume threads).
                 "restored_from": tagged_field(r[7:], "restored_from"),
+                # Where the frames actually are right now: staging / vault /
+                # both / offline / neither. Only "neither" is a loss — a volume
+                # that is simply unplugged gets its own, calmer word.
+                "place": w.get("place", ""),
+                "vol_name": w.get("vol_name", "") or tagged_field(r[7:], "vol_name"),
+                "vol_kind": w.get("vol_kind", "") or tagged_field(r[7:], "vol_kind"),
+                "vol_mounted": w.get("volume", "") != "unmounted",
+                # The path as it resolves NOW, which is not col 6 once a drive
+                # has been remounted under a different name.
+                "live_path": w.get("staging_path", "") or staging_path,
                 "keepers": raws,           # keepers default to all RAWs until tagged
                 "backed": backed,
                 "backed_at": backed_at.get(r[1], ""),
                 "path": staging_path,
-                "exists": Path(staging_path).is_dir(),
+                "exists": Path(w.get("staging_path") or staging_path).is_dir(),
                 # Where a re-download would get its frame list, or "" if the
                 # session is unrecoverable. Drives the restore affordance.
                 "restore_src": restore_source(r[1], staging_path, backed_at),
@@ -435,6 +460,15 @@ class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
                 if not path:
                     self._json(404, {"error": "unknown session"})
                     return
+                # Open where the session IS, not where it was recorded — col 6
+                # goes stale the moment a drive is remounted under another name.
+                # Still resolved from our own ledger, never from the request.
+                w = (_run_json(["where", "--json", sid], []) or [{}])[0]
+                if w.get("volume") == "unmounted":
+                    self._json(410, {"error": "that drive isn't connected",
+                                     "volume": w.get("vol_name", ""), "path": path})
+                    return
+                path = w.get("staging_path") or path
                 if not Path(path).is_dir():
                     self._json(410, {"error": "folder moved or deleted", "path": path})
                     return
