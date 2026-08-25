@@ -207,6 +207,34 @@ mv "$ROOT/parked3" "$RC"; rm -rf "$OC"
 
 rm -rf "$RC"; mv "$ROOT/parked2" "$CARD"          # hand the rig back to ALPHA
 
+say "BRIDGE CONTRACT: every dashboard action is a command the CLI accepts"
+# This is the test that was missing. The rename changed the CLI's rolling-pull
+# case to `spool)` but changed the bridge's argv to "spoolr", so the dashboard
+# ran `spoolr spoolr` — which prints the help text and exits 0. Every Pull from
+# the UI reported success and copied nothing, and the suite never noticed,
+# because it only ever drove the CLI directly.
+BRIDGE_PY="$(dirname "$ING")/../server/bridge.py"
+if [ -f "$BRIDGE_PY" ]; then
+  # First token of each action's argv = the subcommand the CLI must know.
+  BA="$(sed -n 's/^ *"[a-z_]*": \["\([a-z-]*\)".*/\1/p' "$BRIDGE_PY" | sort -u)"
+  ck "found the bridge action table" '[ -n "$BA" ]'
+  BAD=""
+  for c in $BA; do
+    # `help` is what an unknown command falls through to, so a subcommand that
+    # merely prints usage counts as unknown no matter what it exits with.
+    OUT="$("$ING" "$c" --help 2>&1 </dev/null | head -40)"
+    case "$OUT" in *"Usage:"*) BAD="$BAD $c" ;; esac
+  done
+  ck "no bridge action falls through to the help text" '[ -z "$BAD" ]'
+  [ -z "$BAD" ] || echo "      unknown to the CLI:$BAD"
+  # And the specific one that broke: the rolling pull must actually spool.
+  ck "bridge's pull action is the CLI's rolling-pull command" \
+     'grep -q "\"pull\": \[\"spool\"\]" "$BRIDGE_PY"'
+  ck "CLI really has that dispatcher case" 'grep -qE "^ +spool\)" "$(dirname "$ING")/spoolr"'
+else
+  echo "  NOTE: bridge contract cases skipped (bridge.py not found)"
+fi
+
 say "VOLUME IDENTITY: rows record volume UUID + relative path, col 6 unchanged"
 VROW="$(awk -F'\t' '$2=="SES-001"{print; exit}' "$SPOOLR_CONFIG_DIR/ledger.tsv")"
 ck "row carries vol_uuid=" 'echo "$VROW" | grep -q "vol_uuid="'

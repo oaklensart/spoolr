@@ -412,8 +412,15 @@ class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
             "status": ["status"],
             "reconcile": ["reconcile"],
             "peel": ["peel"],
-            "pull": ["spoolr"],
-            "pull_fast": ["spoolr", "--fast"],
+            # "spool" is the CLI's subcommand for a rolling pull — the VERB,
+            # not the product name. The rename split these apart: the dispatcher
+            # case became `spool)` while this table became "spoolr", so the
+            # bridge asked for `spoolr spoolr`, got the help text, and exited 0 —
+            # reporting a successful pull that had copied nothing. Any change
+            # here must match a real case in main()'s dispatcher; the test suite
+            # now checks that.
+            "pull": ["spool"],
+            "pull_fast": ["spool", "--fast"],
             "backup": ["backup"],
             "eject": ["eject"],
             "reveal": ["reveal"],

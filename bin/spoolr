@@ -669,12 +669,19 @@ run_spool() {
   echo -e "${BOLD}SPOOLR${NC} — ${BOLD}CARD $CARD_ID${NC}  ${GRAY}($CARD)${NC}"
   show_fill_gauge
 
-  local REF=""
+  # What the reference actually means, in the user's words. When a spool comes
+  # back with nothing, this is the difference between "you are up to date" and
+  # "the starting line you picked excluded every frame on the card" — which look
+  # identical from the outside and are not remotely the same thing.
+  local REF="" REF_DESC="" FIRST_RUN=0
   if [[ "$MODE" == "today" ]]; then
     REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF"
+    REF_DESC="shot today (since midnight)"
   elif [[ -e "$MARKER" ]]; then
     REF="$MARKER"
+    REF_DESC="new since your last spool of this card"
   else
+    FIRST_RUN=1
     local existing_count
     existing_count=$(find_raws "$CARD/DCIM" | tr -dc '\0' | wc -c | tr -d ' ')
     # First run for this card. The baseline choice can come non-interactively
@@ -704,8 +711,10 @@ run_spool() {
         ok "Baselined — 0 pulled now; future shoots will be captured."
         export_state_json "idle"
         return 0 ;;
-      2) REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF" ;;
-      3) REF="$(mktemp_tracked)"; touch -t 197001010000 "$REF" ;;
+      2) REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF"
+         REF_DESC="shot today (since midnight)" ;;
+      3) REF="$(mktemp_tracked)"; touch -t 197001010000 "$REF"
+         REF_DESC="everything on the card" ;;
     esac
   fi
 
@@ -714,7 +723,30 @@ run_spool() {
   while IFS= read -r -d '' f; do NEW+=("$f"); done < <(find_raws "$CARD/DCIM" -newer "$REF")
 
   if (( ${#NEW[@]} == 0 )); then
-    echo -e "\n  ${GRAY}Nothing new since last spool on $CARD_ID.${NC}\n"
+    local on_card newest_f newest_d
+    on_card=$(find_raws "$CARD/DCIM" | tr -cd '\0' | wc -c | tr -d ' ')
+    echo ""
+    if (( on_card == 0 )); then
+      echo -e "  ${GRAY}No RAW frames on CARD $CARD_ID at all.${NC}"
+    elif (( FIRST_RUN == 1 )); then
+      # The trap this message exists for: a first spool whose baseline matched
+      # nothing. Saying "nothing new since last spool" here would be false —
+      # there has never been a spool of this card — and it hides the fact that
+      # the frames are sitting right there, excluded by the chosen starting line.
+      newest_f=""
+      while IFS= read -r -d '' f; do
+        [[ -z "$newest_f" || "$f" -nt "$newest_f" ]] && newest_f="$f"
+      done < <(find_raws "$CARD/DCIM")
+      newest_d=$(stat -f '%Sm' -t '%Y-%m-%d' "$newest_f" 2>/dev/null || echo "?")
+      warn "0 of $on_card frame(s) on CARD $CARD_ID matched \"${REF_DESC}\"."
+      echo -e "  ${GRAY}The newest frame on this card is from ${BOLD}$newest_d${NC}${GRAY}, so that starting line excluded them all.${NC}"
+      echo -e "  ${GRAY}Nothing was spooled and no starting line was saved.${NC}"
+      echo ""
+      echo -e "  To pull every frame on the card:  ${BOLD}spoolr --baseline=all${NC}"
+    else
+      echo -e "  ${GRAY}Nothing new since your last spool of CARD $CARD_ID — $on_card frame(s) on the card, all already pulled.${NC}"
+    fi
+    echo ""
     export_state_json "idle"
     return 0
   fi
