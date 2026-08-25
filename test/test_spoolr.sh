@@ -40,6 +40,37 @@ say "backup is read-back verified"
 "$ING" backup "$VAULT" >/dev/null 2>&1
 ck "4 frames indexed" '[ "$(grep -c . "$SPOOLR_CONFIG_DIR/backups.tsv")" = 4 ]'
 
+say "HASH BACKEND: digests stay legacy-compatible and every backend agrees"
+# The backend swap is a speed change, not a format change: whichever backend is
+# active must produce byte-identical digests to /usr/bin/shasum, or every hash
+# already in backups.tsv and in every session manifest would be invalidated.
+BK_BAD=0; BK_SEEN=0
+while IFS=$'\t' read -r _sid _fn _sha _vp _ts; do
+  [ -f "$_vp" ] || continue
+  BK_SEEN=$((BK_SEEN+1))
+  [ "$(/usr/bin/shasum -a 256 "$_vp" | awk '{print $1}')" = "$_sha" ] || BK_BAD=$((BK_BAD+1))
+done < "$SPOOLR_CONFIG_DIR/backups.tsv"
+ck "checked every archived frame (4)" '[ "$BK_SEEN" = 4 ]'
+ck "recorded digests match /usr/bin/shasum exactly" '[ "$BK_BAD" = 0 ]'
+
+# Each fallback in the chain must agree on the same file, in the same
+# "<hash>  <file>" shape the awk parse assumes.
+BK_F="$(awk -F'\t' 'NR==1{print $4}' "$SPOOLR_CONFIG_DIR/backups.tsv")"
+BK_REF="$(/usr/bin/shasum -a 256 "$BK_F" | awk '{print $1}')"
+BK_N=0; BK_DIFF=0
+for c in /sbin/sha256sum sha256sum; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  BK_N=$((BK_N+1))
+  [ "$("$c" "$BK_F" | awk '{print $1}')" = "$BK_REF" ] || BK_DIFF=$((BK_DIFF+1))
+done
+ck "native backends agree with the perl fallback" '[ "$BK_DIFF" = 0 ]'
+# Not an assertion: a perl-only machine is exactly what the fallback is for, so
+# finding no native backend must not turn the suite red. The check above that
+# recorded digests match shasum already covers the *active* backend either way.
+[ "$BK_N" -ge 1 ] || echo "  NOTE: no native sha256sum here; only the perl path was exercised"
+BK_DOC="$("$ING" doctor 2>&1)"
+ck "doctor names the active hash backend" 'echo "$BK_DOC" | grep -q "backend:"'
+
 say "reconcile with card present → SAFE (exit 0)"
 "$ING" reconcile >/dev/null 2>&1; ck "exit 0" '[ "$?" = 0 ]'
 

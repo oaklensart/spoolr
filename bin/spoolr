@@ -105,7 +105,27 @@ human_duration() {
 }
 
 file_size() { stat -f%z "$1" 2>/dev/null || stat --format=%s "$1" 2>/dev/null || echo 0; }
-sha_file()  { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+
+# ── SHA-256 backend ──
+# Same algorithm whichever backend wins, so every digest already in backups.tsv
+# and in every session manifest stays valid — this is a speed change, not a
+# format change. It matters because /usr/bin/shasum is a *Perl script*: on the
+# 96-RAW / 1.8 GB SES-001 corpus it takes 4.4 s against 0.96 s for the native
+# /sbin/sha256sum, and a frame is hashed 3-4x across the pipeline (copy verify,
+# backup read-back, reconcile card + vault re-read).
+#
+# /sbin/sha256sum is present on Darwin 24.6 but unverified on older releases,
+# hence a fallback rather than a swap. All backends here print "<hash>  <file>",
+# so the awk parse is identical for each. Probed once at load, never per file.
+SHA_CMD=(shasum -a 256)
+SHA_BACKEND="shasum -a 256 (perl)"
+if [ -x /sbin/sha256sum ]; then
+  SHA_CMD=(/sbin/sha256sum);  SHA_BACKEND="/sbin/sha256sum (native)"
+elif command -v sha256sum &>/dev/null; then
+  SHA_CMD=(sha256sum);        SHA_BACKEND="sha256sum (native)"
+fi
+
+sha_file()  { "${SHA_CMD[@]}" "$1" 2>/dev/null | awk '{print $1}'; }
 
 # Validated interactive numeric choice. Refuses to guess: on a bad or missing
 # answer it re-asks; with no terminal (or SPOOLR_ASSUME_YES) it fails loudly
@@ -1291,8 +1311,11 @@ run_doctor() {
     if [ "$2" = "0" ]; then echo -e "  ${GREEN}✓${NC} $1 ${GRAY}$3${NC}"
     else echo -e "  ${YELLOW}○${NC} $1 ${GRAY}$3${NC}"; fi
   }
-  command -v shasum   &>/dev/null; check "shasum (integrity hashing)" $? "— required"
-  [ "$(command -v shasum)" ] || ok_all=0
+  command -v "${SHA_CMD[0]}" &>/dev/null; check "SHA-256 hashing" $? "— required · backend: $SHA_BACKEND"
+  command -v "${SHA_CMD[0]}" &>/dev/null || ok_all=0
+  if [ "${SHA_CMD[0]}" = "shasum" ]; then
+    echo -e "    ${GRAY}↳ no native sha256sum on this system; hashing runs ~4x slower via Perl${NC}"
+  fi
   command -v rsync    &>/dev/null; check "rsync (verified copy)" $? "— required"
   command -v exiftool &>/dev/null; check "exiftool (previews + dates)" $? "— recommended: brew install exiftool"
   command -v sips     &>/dev/null; check "sips (fallback previews)" $? "— macOS built-in"
