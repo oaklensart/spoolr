@@ -1,0 +1,11 @@
+# Local backups of pre-1.1 originals (not part of the package)
+.attic/
+# macOS
+.DS_Store
+
+# Internal handoff notes — contains personal paths; scrub before publishing
+NEXT-SESSION.md
+
+# Python bytecode cache
+__pycache__/
+*.pyc

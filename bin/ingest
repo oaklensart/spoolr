@@ -1,0 +1,1521 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# INGEST — Card Memory & Local Archival Engine for Photographers
+# v1.1.0 (Open Source Edition) · https://github.com/oaklens/ingest
+#
+# Design promise: the "SAFE TO FORMAT" verdict is never printed unless every
+# keeper has been read back out of your vault and its bytes confirmed to match
+# the original — ideally re-read from the card itself. If anything is uncertain,
+# this tool stops loudly and refuses to call a card safe. A moment never comes
+# back; neither should a frame.
+#
+# Commands:
+#   ingest [slug]                 Rolling offload into a new isolated session folder
+#   ingest --today [slug]         Offload only today's frames (preserves watermark)
+#   ingest status                 Read-only card identity, fill gauge & frame headroom
+#   ingest backup [vault_path]    Archive session keepers to local vault (read-back SHA256)
+#   ingest reconcile [folder]     Pre-wipe verification (Safe to Format check)
+#   ingest restore [SES-ID] [dir] Re-download a past session's keepers off the card
+#   ingest peel [folder]          Extract embedded JPEG previews for Finder tagging
+#   ingest eject                  Safely unmount active camera card
+#   ingest config                 Interactive preferences (staging & vault paths)
+#   ingest doctor                 Environment self-check (tools, paths, permissions)
+#   ingest ui                     Launch interactive Bento Box dashboard (localhost:7331)
+#
+# Environment overrides (advanced / testing):
+#   INGEST_CONFIG_DIR   Override ~/.config/ingest
+#   INGEST_CARD_GLOB    Override /Volumes/*     (card auto-detection root glob)
+#   INGEST_ASSUME_YES   If "1", never prompt; fail loudly instead of blocking
+# ==============================================================================
+
+set -euo pipefail
+
+VERSION="1.1.0"
+
+# ── Colors & Styling ──
+if [ -t 1 ]; then
+  RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
+  CYAN='\033[0;36m'; GRAY='\033[0;90m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+else
+  RED=''; GREEN=''; YELLOW=''; CYAN=''; GRAY=''; BOLD=''; DIM=''; NC=''
+fi
+
+stage() { echo ""; echo -e "  ${BOLD}${CYAN}▸ $1${NC}"; }
+err()   { echo -e "  ${RED}✗ $1${NC}" >&2; }
+ok()    { echo -e "  ${GREEN}✓${NC} $1"; }
+warn()  { echo -e "  ${YELLOW}$1${NC}"; }
+
+# Fail loudly and unambiguously. Never let an error scroll past silently.
+die() { echo ""; err "$1"; echo ""; exit "${2:-1}"; }
+
+# ── The single source of truth for RAW formats ─────────────────────────────
+# Every stage (offload, peel, backup, reconcile) reads from THIS list. It must
+# never be duplicated inline again — a format present here but missing from one
+# stage is exactly how a card gets a false "safe" verdict.
+RAW_EXTS=(RW2 ARW CR3 CR2 NEF DNG ORF RAF SRW PEF RWL IIQ 3FR GPR)
+
+# find RAW files under a directory (null-delimited). Extra args (e.g. -newer X,
+# -maxdepth 1) are passed straight through to find *before* -print0.
+find_raws() {
+  local dir="$1"; shift || true
+  [ -d "$dir" ] || return 0
+  local expr=() e first=1
+  for e in "${RAW_EXTS[@]}"; do
+    (( first )) || expr+=( -o ); first=0
+    expr+=( -iname "*.$e" )
+  done
+  # Exclude macOS AppleDouble sidecars (._Name) — 4KB resource-fork stubs the
+  # OS writes next to real files on SD cards; they are not photos.
+  find "$dir" "$@" -type f ! -name '._*' \( "${expr[@]}" \) -print0
+}
+
+# Is a filename (any case) a RAW we recognise?
+is_raw() {
+  local ext="${1##*.}"; ext="$(printf '%s' "$ext" | tr '[:lower:]' '[:upper:]')"
+  local e
+  for e in "${RAW_EXTS[@]}"; do [ "$e" = "$ext" ] && return 0; done
+  return 1
+}
+
+# ── Progress Bar ──
+BAR_WIDTH=28
+progress_bar() {
+  local current=$1 total=$2 label="${3:-}"
+  (( total <= 0 )) && return 0
+  local pct=$((current * 100 / total))
+  local filled=$((current * BAR_WIDTH / total))
+  local empty=$((BAR_WIDTH - filled))
+  local bar=""
+  [ "$filled" -gt 0 ] && bar=$(printf '█%.0s' $(seq 1 "$filled"))
+  [ "$empty"  -gt 0 ] && bar="${bar}$(printf '░%.0s' $(seq 1 "$empty"))"
+  printf "\r  ${CYAN}[%s]${NC} %3d%% ${GRAY}(%d/%d)${NC} %-28.28s" "$bar" "$pct" "$current" "$total" "$label"
+}
+
+human_size() {
+  local b=${1:-0}
+  if   [ "$b" -ge 1073741824 ]; then awk -v b="$b" 'BEGIN{printf "%.1f GB", b/1073741824}'
+  elif [ "$b" -ge 1048576 ];    then awk -v b="$b" 'BEGIN{printf "%.1f MB", b/1048576}'
+  elif [ "$b" -ge 1024 ];       then awk -v b="$b" 'BEGIN{printf "%.1f KB", b/1024}'
+  else printf "%d B" "$b"; fi
+}
+
+human_duration() {
+  local s=${1:-0}
+  if [ "$s" -ge 60 ]; then printf "%dm%02ds" $((s / 60)) $((s % 60)); else printf "%ds" "$s"; fi
+}
+
+file_size() { stat -f%z "$1" 2>/dev/null || stat --format=%s "$1" 2>/dev/null || echo 0; }
+sha_file()  { shasum -a 256 "$1" 2>/dev/null | awk '{print $1}'; }
+
+# Validated interactive numeric choice. Refuses to guess: on a bad or missing
+# answer it re-asks; with no terminal (or INGEST_ASSUME_YES) it fails loudly
+# rather than silently picking something.
+read_choice() {
+  local prompt="$1" max="$2" reply
+  if [ ! -t 0 ] || [ "${INGEST_ASSUME_YES:-0}" = "1" ]; then
+    err "A choice is required (1-$max) but no interactive terminal is attached."
+    err "Run this command directly in a terminal."
+    exit 3
+  fi
+  while true; do
+    printf "%b" "$prompt" >&2
+    IFS= read -r reply || { echo >&2; die "Input aborted."; }
+    if [[ "$reply" =~ ^[0-9]+$ ]] && (( reply >= 1 && reply <= max )); then
+      printf '%s' "$reply"; return 0
+    fi
+    echo -e "  ${YELLOW}Enter a number between 1 and $max.${NC}" >&2
+  done
+}
+
+# Yes/No confirm for irreversible-ish steps.
+confirm() {
+  local prompt="$1" reply
+  [ "${INGEST_ASSUME_YES:-0}" = "1" ] && return 0
+  if [ ! -t 0 ]; then err "Confirmation required but no terminal attached."; exit 3; fi
+  printf "%b [y/N]: " "$prompt" >&2
+  IFS= read -r reply || return 1
+  [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# ── Directories & Durable Database ──
+CFG_DIR="${INGEST_CONFIG_DIR:-$HOME/.config/ingest}"
+CONF_FILE="$CFG_DIR/config.conf"
+CARDS_REGISTRY="$CFG_DIR/cards.tsv"
+LEDGER="$CFG_DIR/ledger.tsv"
+BACKUP_INDEX="$CFG_DIR/backups.tsv"
+WATERMARKS_DIR="$CFG_DIR/watermarks"
+STATE_JSON="$CFG_DIR/state.json"
+MANIFEST_NAME=".ingest_manifest.tsv"
+AVG_FRAME_MB=25
+CARD_GLOB="${INGEST_CARD_GLOB:-/Volumes/*}"
+
+mkdir -p "$CFG_DIR" "$WATERMARKS_DIR"
+touch "$CONF_FILE" "$CARDS_REGISTRY" "$LEDGER" "$BACKUP_INDEX"
+
+DEFAULT_STAGING="$HOME/Pictures/Ingest"
+DEFAULT_VAULT=""
+
+load_config() {
+  STAGING_ROOT="$DEFAULT_STAGING"
+  VAULT_ROOT="$DEFAULT_VAULT"
+  if [ -f "$CONF_FILE" ]; then
+    # shellcheck source=/dev/null
+    source "$CONF_FILE"
+  fi
+}
+
+save_config() {
+  cat <<EOF > "$CONF_FILE"
+# INGEST User Preferences
+STAGING_ROOT="$STAGING_ROOT"
+VAULT_ROOT="$VAULT_ROOT"
+EOF
+}
+
+load_config
+mkdir -p "$STAGING_ROOT"
+
+# ── Cleanup: single trap, tracks any temp files we create ──
+TMP_FILES=()
+# NB: an EXIT trap that ends on a nonzero command leaks that status as the
+# script's exit code. This must always return 0, or a correct "SAFE" verdict
+# could exit non-zero and be misread as a failure by the UI or wrapper scripts.
+cleanup() {
+  local t
+  for t in "${TMP_FILES[@]:-}"; do
+    [ -n "$t" ] && rm -f "$t"
+  done
+  return 0
+}
+trap cleanup EXIT
+mktemp_tracked() { local t; t="$(mktemp)"; TMP_FILES+=("$t"); printf '%s' "$t"; }
+
+# ═══════════════════════════════════════════════════════════════
+# 1. CARD DETECTION & MULTI-CARD ROTATION
+# ═══════════════════════════════════════════════════════════════
+# Scan for mounted volumes that contain a DCIM directory. Populates FOUND_CARDS.
+_scan_cards() {
+  FOUND_CARDS=()
+  local vol
+  for vol in $CARD_GLOB; do
+    [ -d "$vol/DCIM" ] && FOUND_CARDS+=("$vol") || true
+  done
+  return 0   # never let a final false test trip set -e in the caller
+}
+
+# Hard detect: sets CARD, CARD_ID, MARKER; exits if no card present.
+detect_card() {
+  _scan_cards
+  if (( ${#FOUND_CARDS[@]} == 0 )); then
+    export_state_json "no_card"
+    err "No camera card detected (nothing under ${CARD_GLOB}/DCIM)."
+    echo -e "  ${GRAY}Insert an SD card or camera volume and retry.${NC}" >&2
+    exit 1
+  elif (( ${#FOUND_CARDS[@]} == 1 )); then
+    CARD="${FOUND_CARDS[0]}"
+  else
+    echo -e "${BOLD}Multiple camera cards detected:${NC}"
+    local i=1 v
+    for v in "${FOUND_CARDS[@]}"; do
+      local cid="UNTAGGED"
+      [ -f "$v/.card_id" ] && cid=$(cat "$v/.card_id")
+      echo -e "  $i) $v  ${GRAY}(CARD ID: ${BOLD}$cid${NC}${GRAY})${NC}"
+      i=$((i+1))
+    done
+    local pick; pick="$(read_choice "Select card [1-${#FOUND_CARDS[@]}]: " "${#FOUND_CARDS[@]}")"
+    CARD="${FOUND_CARDS[$((pick-1))]}"
+  fi
+  _identify_card
+}
+
+# Soft detect (no exit): sets CARD="" if none. Used by reconcile where the card
+# may legitimately be absent.
+detect_card_soft() {
+  _scan_cards
+  CARD=""; CARD_ID=""; MARKER=""
+  if (( ${#FOUND_CARDS[@]} == 1 )); then
+    CARD="${FOUND_CARDS[0]}"; _identify_card
+  elif (( ${#FOUND_CARDS[@]} > 1 )); then
+    detect_card   # ask which one
+  fi
+  return 0
+}
+
+# READ-ONLY. Never writes to the card. If the card carries a .card_id we use it;
+# otherwise we use a transient label (the volume name) and flag it unnamed. A
+# card is only ever tagged during a deliberate offload — see assign_card_identity.
+_identify_card() {
+  local id_file="$CARD/.card_id"
+  CARD_UNNAMED=0
+  if [[ -f "$id_file" ]]; then
+    CARD_ID="$(cat "$id_file" 2>/dev/null)"
+  fi
+  if [[ -z "${CARD_ID:-}" ]]; then
+    CARD_ID="$(basename "$CARD" | tr '[:lower:]' '[:upper:]')"
+    CARD_UNNAMED=1
+  fi
+  MARKER="$WATERMARKS_DIR/${CARD_ID}.watermark"
+  _identify_card_color
+  return 0
+}
+
+# ── CARD ACCENT COLOR ──
+# A card's colour is part of its identity, like its name: it rides on the card
+# itself (.card_color) so it follows the card between machines and survives a
+# reset, with the local registry as a fallback for write-protected cards.
+CARD_PALETTE="cyanotype anthotype aerochrome chlorophyll platinum"
+
+_valid_card_color() {
+  case " $CARD_PALETTE " in *" ${1:-} "*) return 0 ;; *) return 1 ;; esac
+}
+
+_registry_get_color() {
+  [ -s "$CARDS_REGISTRY" ] || return 0
+  awk -F'\t' -v n="${1:-}" '$1 == n { print $7; exit }' "$CARDS_REGISTRY" 2>/dev/null
+}
+
+# Mirror the colour into cards.tsv (column 7), updating in place if the card is
+# already registered. Keeps the registry usable when a card is read-only.
+_registry_set_color() {
+  local name="$1" color="$2" tmp found=0
+  tmp="$(mktemp)" || return 1
+  if [ -s "$CARDS_REGISTRY" ]; then
+    while IFS=$'\t' read -r c1 c2 c3 c4 c5 c6 c7 || [ -n "${c1:-}" ]; do
+      [ -z "${c1:-}" ] && continue
+      if [ "$c1" = "$name" ]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$c1" "$c2" "$c3" "$c4" "${c5:-0}" "${c6:-0}" "$color"
+        found=1
+      else
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$c1" "$c2" "$c3" "$c4" "${c5:-0}" "${c6:-0}" "${c7:-}"
+      fi
+    done < "$CARDS_REGISTRY" > "$tmp"
+  fi
+  if [ "$found" = "0" ]; then
+    local size_h; size_h=$(df -Ph "$CARD" 2>/dev/null | awk 'NR==2 {print $2}')
+    printf '%s\t%s\t%s\t%s\t0\t0\t%s\n' \
+      "$name" "$name (${size_h:-?})" "${size_h:-?}" "$(date +'%Y-%m-%d')" "$color" >> "$tmp"
+  fi
+  mv "$tmp" "$CARDS_REGISTRY" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# READ-ONLY. Card file wins; registry is the fallback.
+_identify_card_color() {
+  CARD_COLOR=""
+  local f="$CARD/.card_color"
+  [ -f "$f" ] && CARD_COLOR="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
+  if ! _valid_card_color "${CARD_COLOR:-}"; then
+    CARD_COLOR="$(_registry_get_color "${CARD_ID:-}" 2>/dev/null)"
+  fi
+  _valid_card_color "${CARD_COLOR:-}" || CARD_COLOR=""
+  return 0
+}
+
+# Deliberate write — only from naming, the same moment .card_id is written.
+_write_card_color() {
+  local color="$1"
+  _valid_card_color "$color" || return 1
+  printf '%s\n' "$color" > "$CARD/.card_color" 2>/dev/null || true   # read-only card → registry still carries it
+  _registry_set_color "${CARD_ID:-}" "$color" || true
+  CARD_COLOR="$color"
+  return 0
+}
+
+# Deliberately assign a permanent identity to a card. Called ONLY from the
+# offload path — verification and status never write to a card.
+assign_card_identity() {
+  [ "${CARD_UNNAMED:-0}" = "1" ] || return 0
+  local id_file="$CARD/.card_id" assigned=""
+  echo ""
+  warn "✦ New or unrecognised card mounted at $CARD"
+  if [ -t 0 ] && [ "${INGEST_ASSUME_YES:-0}" != "1" ]; then
+    printf "Assign a permanent name for this physical card (e.g. ALPHA, SONY-128, GR3-B): " >&2
+    IFS= read -r assigned || assigned=""
+  fi
+  assigned=$(printf '%s' "${assigned:-}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')
+  [ -z "$assigned" ] && assigned="$CARD_ID"   # fall back to the transient volume-name label
+  if printf '%s\n' "$assigned" > "$id_file" 2>/dev/null; then
+    ok "Card permanently tagged as ${BOLD}$assigned${NC}"
+    local size_h; size_h=$(df -Ph "$CARD" 2>/dev/null | awk 'NR==2 {print $2}')
+    printf "%s\t%s\t%s\t%s\t0\t0\n" "$assigned" "$assigned (${size_h:-?})" "${size_h:-?}" "$(date +'%Y-%m-%d')" >> "$CARDS_REGISTRY"
+  else
+    warn "Could not write $id_file (card read-only?). Using session-only ID $assigned."
+  fi
+  CARD_ID="$assigned"
+  CARD_UNNAMED=0
+  MARKER="$WATERMARKS_DIR/${CARD_ID}.watermark"
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 2. FILL & HEADROOM TELEMETRY
+# ═══════════════════════════════════════════════════════════════
+get_card_telemetry() {
+  local line
+  line=$(df -Pk "$CARD" 2>/dev/null | awk 'NR==2')
+  CARD_PCT=$(echo "$line" | awk '{gsub("%","",$5); print $5+0}')
+  CARD_AVAIL_KB=$(echo "$line" | awk '{print $4+0}')
+  CARD_FREE_H=$(df -Ph "$CARD" 2>/dev/null | awk 'NR==2 {print $4}')
+  [ -z "${CARD_PCT:-}" ] && CARD_PCT=0
+  CARD_HEADROOM=$(( CARD_AVAIL_KB / (AVG_FRAME_MB * 1024) ))
+}
+
+show_fill_gauge() {
+  get_card_telemetry
+  if [ "$CARD_PCT" -ge 90 ]; then
+    echo -e "  ${RED}Card ${CARD_PCT}% full${NC} — ${CARD_FREE_H} free ${RED}(~${CARD_HEADROOM} frames headroom remaining)${NC}"
+  elif [ "$CARD_PCT" -ge 75 ]; then
+    echo -e "  ${YELLOW}Card ${CARD_PCT}% full${NC} — ${CARD_FREE_H} free (~${CARD_HEADROOM} frames headroom)"
+  else
+    echo -e "  ${GREEN}Card ${CARD_PCT}% full${NC} — ${CARD_FREE_H} free (~${CARD_HEADROOM} frames headroom)"
+  fi
+}
+
+show_history() {
+  local rows; rows=$(awk -F'\t' -v id="$CARD_ID" '$3==id' "$LEDGER")
+  if [[ -z "$rows" ]]; then
+    echo -e "  ${GRAY}No prior ingest runs recorded for $CARD_ID${NC}"
+    return
+  fi
+  local runs total span_first span_last
+  runs=$(echo "$rows" | wc -l | tr -d ' ')
+  total=$(echo "$rows" | awk -F'\t' '{gsub("[^0-9]","",$5); s+=$5} END{print s}')
+  span_first=$(echo "$rows" | head -1 | cut -f1 | cut -d' ' -f1)
+  span_last=$(echo "$rows"  | tail -1 | cut -f1 | cut -d' ' -f1)
+  echo -e "  ${DIM}Recent sessions for $CARD_ID:${NC}"
+  echo "$rows" | tail -4 | awk -F'\t' '{printf "    %-12s  %-10s  %-16s  %s frames\n",$1,$2,$4,$5}'
+  echo -e "  ${GRAY}${runs} total runs · ${total} frames ingested (${span_first} → ${span_last})${NC}"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 3. SESSION DIRECTORY GENERATOR
+# ═══════════════════════════════════════════════════════════════
+next_session_id() {
+  # The HIGHEST SES- number anywhere in the ledger, not the last row's. `reset`
+  # deliberately preserves foreign (non-SES) rows, and one of those landing last
+  # made this restart at SES-001 and collide with a live session — which would
+  # then hand a restore the wrong session's frames out of backups.tsv.
+  local last_num=0
+  if [ -s "$LEDGER" ]; then
+    last_num=$(awk -F'\t' '$2 ~ /^SES-[0-9]+$/ { n = $2; sub(/^SES-/, "", n);
+                              n += 0; if (n > m) m = n } END { print m + 0 }' "$LEDGER")
+  fi
+  printf "SES-%03d" $((last_num + 1))
+}
+
+create_session_dir() {
+  local slug="${1:-}"
+  local sid; sid="$(next_session_id)"
+  local today; today="$(date +'%Y-%m-%d')"
+  local dirname="${today}_${sid}"
+  if [ -n "$slug" ]; then
+    local clean_slug; clean_slug=$(printf '%s' "$slug" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9_-]/-/g' -e 's/--*/-/g' -e 's/^-//' -e 's/-$//')
+    [ -n "$clean_slug" ] && dirname="${dirname}_${clean_slug}"
+  fi
+  CURRENT_SESSION_ID="$sid"
+  CURRENT_SESSION_DIR="$STAGING_ROOT/$dirname"
+  mkdir -p "$CURRENT_SESSION_DIR"
+}
+
+# ── Manifest helpers ──────────────────────────────────────────
+# Manifest lives inside each session folder. Columns:
+#   filename \t size \t sha256 \t card_id \t session_id \t source_path \t backup_status
+manifest_path() { printf '%s/%s' "$1" "$MANIFEST_NAME"; }
+
+manifest_hash_for() { # $1 folder  $2 filename -> sha
+  awk -F'\t' -v f="$2" '$1==f{print $3; exit}' "$(manifest_path "$1")" 2>/dev/null
+}
+manifest_source_for() { # $1 folder  $2 filename -> source_path
+  awk -F'\t' -v f="$2" '$1==f{print $6; exit}' "$(manifest_path "$1")" 2>/dev/null
+}
+manifest_mark_backed() { # $1 folder  $2 filename
+  local mp; mp="$(manifest_path "$1")"; [ -f "$mp" ] || return 0
+  local tmp; tmp="$(mktemp_tracked)"
+  awk -F'\t' -v f="$2" 'BEGIN{OFS="\t"} $1==f{$7="BACKED"} 1' "$mp" > "$tmp" && mv "$tmp" "$mp"
+}
+
+# Vault path recorded for a given (session, filename), if any.
+vault_path_for() { # $1 session_id  $2 filename -> vault_path
+  awk -F'\t' -v s="$1" -v f="$2" '$1==s && $2==f{print $4; exit}' "$BACKUP_INDEX" 2>/dev/null
+}
+
+# List keeper basenames for a session folder: tagged JPEG previews map to their
+# RAW siblings; if no Finder tags are found, every RAW in the manifest is a keeper.
+session_keepers() { # $1 folder -> prints basenames (no extension), one per line
+  local folder="$1" tagged=()
+  if command -v mdfind &>/dev/null; then
+    while IFS= read -r j; do [ -n "$j" ] && tagged+=("$j"); done \
+      < <(mdfind -onlyin "$folder" 'kMDItemUserTags == "*"' 2>/dev/null | grep -iE '\.jpe?g$' || true)
+  fi
+  if (( ${#tagged[@]} > 0 )); then
+    local j base
+    for j in "${tagged[@]}"; do base="$(basename "$j")"; printf '%s\n' "${base%.*}"; done | sort -u
+  else
+    # all RAWs in manifest
+    awk -F'\t' 'NF>=1{print $1}' "$(manifest_path "$folder")" 2>/dev/null | while IFS= read -r fn; do
+      printf '%s\n' "${fn%.*}"
+    done | sort -u
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 4. ROLLING INGEST ENGINE
+# ═══════════════════════════════════════════════════════════════
+run_ingest() {
+  local MODE="$1"
+  local SLUG="${2:-}"
+  detect_card
+  assign_card_identity   # the only place a card is ever tagged
+
+  echo ""
+  echo -e "${BOLD}INGEST${NC} — ${BOLD}CARD $CARD_ID${NC}  ${GRAY}($CARD)${NC}"
+  show_fill_gauge
+
+  local REF=""
+  if [[ "$MODE" == "today" ]]; then
+    REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF"
+  elif [[ -e "$MARKER" ]]; then
+    REF="$MARKER"
+  else
+    local existing_count
+    existing_count=$(find_raws "$CARD/DCIM" | tr -dc '\0' | wc -c | tr -d ' ')
+    # First run for this card. The baseline choice can come non-interactively
+    # via --baseline=now|today|all (used by the dashboard), else we prompt.
+    local base_choice=""
+    case "${BASELINE:-}" in
+      now)   base_choice=1 ;;
+      today) base_choice=2 ;;
+      all)   base_choice=3 ;;
+    esac
+    if [ -z "$base_choice" ]; then
+      echo ""
+      warn "First rolling ingest for $CARD_ID — card holds ${existing_count} existing photo(s)."
+      echo "  What counts as new?"
+      echo "    1) Only photos from now on (baseline to newest existing frame)"
+      echo "    2) Today's shoot           (photos shot since midnight)"
+      echo "    3) Everything on the card  (pull all ${existing_count} frames)"
+      base_choice="$(read_choice "  Pick [1-3]: " 3)"
+    fi
+    case "$base_choice" in
+      1)
+        local newest="" f
+        while IFS= read -r -d '' f; do
+          [[ -z "$newest" || "$f" -nt "$newest" ]] && newest="$f"
+        done < <(find_raws "$CARD/DCIM")
+        if [[ -n "$newest" ]]; then touch -r "$newest" "$MARKER"; else touch "$MARKER"; fi
+        ok "Baselined — 0 pulled now; future shoots will be captured."
+        export_state_json "idle"
+        return 0 ;;
+      2) REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF" ;;
+      3) REF="$(mktemp_tracked)"; touch -t 197001010000 "$REF" ;;
+    esac
+  fi
+
+  # Gather new RAW files
+  local NEW=()
+  while IFS= read -r -d '' f; do NEW+=("$f"); done < <(find_raws "$CARD/DCIM" -newer "$REF")
+
+  if (( ${#NEW[@]} == 0 )); then
+    echo -e "\n  ${GRAY}Nothing new since last ingest on $CARD_ID.${NC}\n"
+    export_state_json "idle"
+    return 0
+  fi
+
+  create_session_dir "$SLUG"
+  local MANIFEST; MANIFEST="$(manifest_path "$CURRENT_SESSION_DIR")"
+  : > "$MANIFEST"
+
+  local total_bytes=0 f sz
+  for f in "${NEW[@]}"; do sz=$(file_size "$f"); total_bytes=$((total_bytes + sz)); done
+
+  local fast_note=""
+  [ "${FAST:-0}" = "1" ] && fast_note=" ${DIM}[fast — verify at reconcile]${NC}"
+  stage "OFFLOADING ${#NEW[@]} frame(s) → $CURRENT_SESSION_DIR ($(human_size "$total_bytes"))$fast_note"
+  local t0=$SECONDS i=0 copied=0 failed=()
+  for f in "${NEW[@]}"; do
+    i=$((i + 1))
+    local bn; bn="$(basename "$f")"
+    progress_bar "$i" "${#NEW[@]}" "$bn"
+    if ! rsync -t "$f" "$CURRENT_SESSION_DIR/" 2>/dev/null; then
+      failed+=("$bn"); continue
+    fi
+    local src_sha dst_sha dst="$CURRENT_SESSION_DIR/$bn"
+    # Always hash the staged copy (fast local read) — proves it's readable and
+    # records the content hash for the manifest.
+    dst_sha="$(sha_file "$dst")"
+    if [ -z "$dst_sha" ]; then failed+=("$bn"); rm -f "$dst"; continue; fi
+    # Full mode also re-reads the card original and compares — catches a bad
+    # card read at copy time (the slow part). --fast skips this; reconcile's
+    # card-vs-vault check is the definitive gate either way.
+    if [ "${FAST:-0}" != "1" ]; then
+      src_sha="$(sha_file "$f")"
+      if [ "$src_sha" != "$dst_sha" ]; then failed+=("$bn"); rm -f "$dst"; continue; fi
+    fi
+    printf "%s\t%s\t%s\t%s\t%s\t%s\tPENDING\n" \
+      "$bn" "$(file_size "$dst")" "$dst_sha" "$CARD_ID" "$CURRENT_SESSION_ID" "$f" >> "$MANIFEST"
+    copied=$((copied + 1))
+  done
+  printf "\n"
+
+  if (( ${#failed[@]} > 0 )); then
+    err "${#failed[@]} frame(s) FAILED to copy/verify and were NOT recorded:"
+    printf '    %s\n' "${failed[@]}" >&2
+    warn "Card left untouched. Re-run 'ingest' to retry these frames."
+  fi
+
+  if (( copied == 0 )); then
+    export_state_json "idle"
+    die "No frames were safely offloaded. Nothing was recorded; your card is unchanged."
+  fi
+
+  local verb="copied & verified"; [ "${FAST:-0}" = "1" ] && verb="copied"
+  ok "$copied frame(s) $verb to ${BOLD}$CURRENT_SESSION_DIR${NC} in $(human_duration $((SECONDS - t0)))"
+
+  # Advance watermark only in rolling mode, anchored to the newest file we
+  # actually copied and verified (never past a frame we failed to offload).
+  if [[ "$MODE" == "rolling" ]]; then
+    local newest=""
+    for f in "${NEW[@]}"; do
+      [ -f "$CURRENT_SESSION_DIR/$(basename "$f")" ] || continue
+      [[ -z "$newest" || "$f" -nt "$newest" ]] && newest="$f"
+    done
+    if [ -n "$newest" ]; then touch -r "$newest" "$MARKER"; ok "Watermark advanced → $(basename "$newest")"; fi
+  fi
+
+  # Shoot dates (best-effort, for the ledger)
+  local dates=""
+  if command -v exiftool &>/dev/null; then
+    # Only the RAW frames, and drop any blank lines so we never get a leading
+    # comma or empty date components in the ledger.
+    dates=$(exiftool -q -m -fast2 -p '$CreateDate' -d '%Y-%m-%d' \
+              "$CURRENT_SESSION_DIR"/*.[Rr][Ww]2 "$CURRENT_SESSION_DIR"/*.[Aa][Rr][Ww] \
+              "$CURRENT_SESSION_DIR"/*.[Cc][Rr]* "$CURRENT_SESSION_DIR"/*.[Nn][Ee][Ff] \
+              "$CURRENT_SESSION_DIR"/*.[Dd][Nn][Gg] "$CURRENT_SESSION_DIR"/*.[Oo][Rr][Ff] \
+              "$CURRENT_SESSION_DIR"/*.[Rr][Aa][Ff] 2>/dev/null \
+              | awk 'NF' | sort -u | paste -sd, - || true)
+  fi
+  [ -z "$dates" ] && dates=$(date +'%Y-%m-%d')
+
+  # Append to durable ledger:
+  # timestamp \t session_id \t card_id \t shoot_dates \t frames \t staging_path \t status
+  printf "%s\t%s\t%s\t%s\t%s\t%s\tPENDING\n" \
+    "$(date +'%Y-%m-%d %H:%M:%S')" "$CURRENT_SESSION_ID" "$CARD_ID" "$dates" "$copied" "$CURRENT_SESSION_DIR" >> "$LEDGER"
+
+  run_peel "$CURRENT_SESSION_DIR"
+
+  echo ""
+  echo -e "  ${BOLD}Next steps:${NC}"
+  echo -e "    1. Open ${BOLD}$CURRENT_SESSION_DIR${NC} in Finder."
+  echo -e "    2. Color-tag your keeper JPEGs (Green/Purple/etc)."
+  echo -e "    3. Run ${BOLD}ingest backup${NC} to archive keepers to your vault drive."
+  echo -e "    4. Run ${BOLD}ingest reconcile${NC} to get the Safe-to-Format verdict."
+  echo ""
+  export_state_json "staged"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 5. PREVIEW EXTRACTION (PEEL)
+# ═══════════════════════════════════════════════════════════════
+run_peel() {
+  local target_dir="${1:-$PWD}"
+  [ -d "$target_dir" ] || die "Directory not found: $target_dir"
+
+  stage "EXTRACTING PREVIEWS (for fast Finder color tagging)"
+  local count=0 raw
+  while IFS= read -r -d '' raw; do
+    local base; base="$(basename "$raw")"; base="${base%.*}"
+    local out_jpg="$target_dir/$base.jpg"
+    [ -f "$out_jpg" ] && continue
+    if command -v exiftool &>/dev/null; then
+      # exiftool exits 0 even when a tag is absent ("0 output files created"),
+      # so we can't trust its exit code — try each embedded-preview tag and
+      # check whether a non-empty file was actually written. Different brands
+      # store the preview under different tags (Panasonic RW2 → JpgFromRaw,
+      # Sony/Nikon → PreviewImage, etc.).
+      local tag
+      for tag in PreviewImage JpgFromRaw OtherImage ThumbnailImage; do
+        exiftool -b -"$tag" -w "%d%f.jpg" "$raw" &>/dev/null || true
+        [ -s "$out_jpg" ] && break
+        rm -f "$out_jpg"
+      done
+    elif command -v sips &>/dev/null; then
+      sips -s format jpeg "$raw" --out "$out_jpg" &>/dev/null || true
+    fi
+    [ -s "$out_jpg" ] && count=$((count + 1))
+  done < <(find_raws "$target_dir" -maxdepth 1)
+
+  if (( count == 0 )); then
+    warn "No previews extracted. Install exiftool for reliable previews:  brew install exiftool"
+    echo -e "  ${GRAY}You can still tag the RAW files directly in Finder.${NC}"
+  else
+    ok "$count preview JPEG(s) ready in $target_dir"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 6. LOCAL ATTACHED VAULT ARCHIVAL (BACKUP) — read-back verified
+# ═══════════════════════════════════════════════════════════════
+run_backup() {
+  local TARGET_VAULT="${1:-$VAULT_ROOT}"
+
+  if [ -z "$TARGET_VAULT" ]; then
+    echo ""
+    warn "No default backup vault configured."
+    echo "Detected attached storage volumes:"
+    local vols=() i=1 v
+    for v in $CARD_GLOB; do
+      [ -d "$v" ] && [[ "$v" != *"Macintosh HD"* ]] && [[ "$v" != *"/Recovery"* ]] && vols+=("$v")
+    done
+    if (( ${#vols[@]} > 0 )); then
+      for v in "${vols[@]}"; do
+        local free_h; free_h=$(df -Ph "$v" 2>/dev/null | awk 'NR==2 {print $4}')
+        echo -e "  $i) $v  ${GRAY}(${free_h} free)${NC}"
+        i=$((i+1))
+      done
+      local vc; vc="$(read_choice "Select volume to use as Vault [1-${#vols[@]}]: " "${#vols[@]}")"
+      TARGET_VAULT="${vols[$((vc-1))]}/Photos/Archive"
+    else
+      if [ ! -t 0 ]; then die "No vault configured and no volumes detected. Run 'ingest config' first."; fi
+      printf "Enter full path for local backup directory: " >&2; IFS= read -r TARGET_VAULT
+    fi
+    [ -z "$TARGET_VAULT" ] && die "No vault path given."
+    VAULT_ROOT="$TARGET_VAULT"; save_config
+    ok "Default backup vault saved to ${BOLD}$VAULT_ROOT${NC}"
+  fi
+
+  # Latest session folder by default
+  local SESS_DIR=""
+  [ -s "$LEDGER" ] && SESS_DIR=$(awk -F'\t' 'NF>=6{v=$6} END{print v}' "$LEDGER")
+  [ -d "$SESS_DIR" ] || SESS_DIR="$PWD"
+  [ -f "$(manifest_path "$SESS_DIR")" ] || warn "No manifest in $SESS_DIR — backing up loose RAWs (hash recorded from source)."
+
+  local SESS_NAME; SESS_NAME=$(basename "$SESS_DIR")
+  local SESS_ID; SESS_ID=$(awk -F'\t' -v d="$SESS_DIR" '$6==d{print $2}' "$LEDGER" | tail -1)
+  [ -z "$SESS_ID" ] && SESS_ID="LOOSE"
+  local DEST_VAULT="$TARGET_VAULT/$SESS_NAME"
+
+  if ! mkdir -p "$DEST_VAULT" 2>/dev/null; then
+    die "Cannot write to vault at $DEST_VAULT. Is the drive mounted and writable?"
+  fi
+
+  # Build the keeper RAW file list from the manifest (falls back to on-disk RAWs).
+  local KEEPERS=() base
+  while IFS= read -r base; do [ -n "$base" ] && KEEPERS+=("$base"); done < <(session_keepers "$SESS_DIR")
+
+  local FILES=() mp; mp="$(manifest_path "$SESS_DIR")"
+  if [ -f "$mp" ] && (( ${#KEEPERS[@]} > 0 )); then
+    for base in "${KEEPERS[@]}"; do
+      local fn; fn=$(awk -F'\t' -v b="$base" '{n=$1; sub(/\.[^.]*$/,"",n); if(n==b){print $1; exit}}' "$mp")
+      [ -n "$fn" ] && [ -f "$SESS_DIR/$fn" ] && FILES+=("$SESS_DIR/$fn")
+    done
+  else
+    local rf
+    while IFS= read -r -d '' rf; do FILES+=("$rf"); done < <(find_raws "$SESS_DIR" -maxdepth 1)
+  fi
+
+  if (( ${#FILES[@]} == 0 )); then
+    warn "No keeper RAW files found in $SESS_DIR to back up."
+    return 0
+  fi
+
+  stage "BACKING UP ${#FILES[@]} KEEPER(S) → $DEST_VAULT"
+  local count=0 fail=() raw
+  for raw in "${FILES[@]}"; do
+    local fname; fname=$(basename "$raw")
+    local base="${fname%.*}"
+    local src_sha; src_sha="$(manifest_hash_for "$SESS_DIR" "$fname")"
+    [ -z "$src_sha" ] && src_sha="$(sha_file "$raw")"
+
+    if ! rsync -t "$raw" "$DEST_VAULT/" 2>/dev/null; then fail+=("$fname (copy failed)"); continue; fi
+    # READ-BACK: hash the file now sitting in the vault and require an exact match.
+    local dst_sha; dst_sha="$(sha_file "$DEST_VAULT/$fname")"
+    if [ -z "$dst_sha" ] || [ "$dst_sha" != "$src_sha" ]; then
+      fail+=("$fname (vault copy hash mismatch)"); rm -f "$DEST_VAULT/$fname"; continue
+    fi
+    # Record: session_id \t filename \t sha256 \t vault_path \t timestamp
+    printf "%s\t%s\t%s\t%s\t%s\n" "$SESS_ID" "$fname" "$dst_sha" "$DEST_VAULT/$fname" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$BACKUP_INDEX"
+    manifest_mark_backed "$SESS_DIR" "$fname"
+    count=$((count + 1))
+    echo -e "    ${GREEN}✓${NC} $fname  ${GRAY}(${dst_sha:0:12}…)${NC}"
+  done
+
+  if (( ${#fail[@]} > 0 )); then
+    echo ""
+    err "${#fail[@]} keeper(s) did NOT verify in the vault:"
+    printf '    %s\n' "${fail[@]}" >&2
+    warn "These are NOT safe. Re-run 'ingest backup' (check drive space / connection)."
+    export_state_json "pending"
+  fi
+
+  echo ""
+  ok "$count frame(s) archived & read-back-verified to ${BOLD}$DEST_VAULT${NC}"
+  echo -e "  ${GRAY}Next: run ${BOLD}ingest reconcile${NC}${GRAY} for the pre-wipe verdict.${NC}\n"
+  export_state_json "backed"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 7. RECONCILE (PRE-WIPE INTEGRITY VERDICT) — the gate
+# ═══════════════════════════════════════════════════════════════
+# Verify one session folder. Prints a report. Returns 0 iff every keeper is
+# confirmed present in the vault with a matching hash. Re-hashes the card
+# original when the card is present (the strongest guarantee), else the staged
+# copy. Sets: R_RAWS R_KEEPERS R_VERIFIED R_MISSING (globals, accumulated).
+verify_one_session() {
+  local folder="$1"
+  local mp; mp="$(manifest_path "$folder")"
+  local sess_id; sess_id=$(awk -F'\t' -v d="$folder" '$6==d{print $2}' "$LEDGER" | tail -1)
+  [ -z "$sess_id" ] && sess_id="LOOSE"
+
+  # All RAWs physically in the folder
+  local all_raws=() rf
+  while IFS= read -r -d '' rf; do all_raws+=("$rf"); done < <(find_raws "$folder" -maxdepth 1)
+
+  # Keeper basenames
+  local keepers=() base
+  while IFS= read -r base; do [ -n "$base" ] && keepers+=("$base"); done < <(session_keepers "$folder")
+
+  echo -e "  ${BOLD}$(basename "$folder")${NC} ${GRAY}[$sess_id]${NC}"
+  local verified=0 missing=() total=${#keepers[@]} i=0
+
+  for base in "${keepers[@]}"; do
+    i=$((i+1))
+    progress_bar "$i" "$total" "$base"
+    # find the manifest filename for this keeper base
+    local fn=""
+    if [ -f "$mp" ]; then
+      fn=$(awk -F'\t' -v b="$base" '{n=$1; sub(/\.[^.]*$/,"",n); if(n==b){print $1; exit}}' "$mp")
+    fi
+    if [ -z "$fn" ]; then
+      # fall back: find a RAW on disk with this base
+      local cand
+      for cand in "${all_raws[@]}"; do
+        local cb; cb="$(basename "$cand")"; [ "${cb%.*}" = "$base" ] && { fn="$cb"; break; }
+      done
+    fi
+    [ -z "$fn" ] && { missing+=("$base (no RAW found)"); continue; }
+
+    # Expected hash: prefer re-reading the ORIGINAL on the card, else staged copy.
+    local expected="" src_desc=""
+    if [ -n "${CARD:-}" ]; then
+      local orig; orig="$(manifest_source_for "$folder" "$fn")"
+      [ -n "$orig" ] && [ -f "$orig" ] || orig="$(find_raws "$CARD/DCIM" | tr '\0' '\n' | grep -F "/$fn" | head -1)"
+      if [ -n "$orig" ] && [ -f "$orig" ]; then expected="$(sha_file "$orig")"; src_desc="card"; fi
+    fi
+    if [ -z "$expected" ] && [ -f "$folder/$fn" ]; then expected="$(sha_file "$folder/$fn")"; src_desc="staged"; fi
+    if [ -z "$expected" ]; then expected="$(manifest_hash_for "$folder" "$fn")"; src_desc="manifest"; fi
+
+    # Vault copy: re-hash the actual file in the vault right now.
+    local vp; vp="$(vault_path_for "$sess_id" "$fn")"
+    if [ -z "$vp" ] || [ ! -f "$vp" ]; then missing+=("$base (not in vault)"); continue; fi
+    local vsha; vsha="$(sha_file "$vp")"
+    if [ -n "$expected" ] && [ "$vsha" = "$expected" ]; then
+      verified=$((verified + 1))
+    else
+      missing+=("$base (vault hash ≠ $src_desc)")
+    fi
+  done
+  (( total > 0 )) && printf "\r%*s\r" 80 ""   # clear progress line
+
+  echo -e "    RAWs in folder : ${BOLD}${#all_raws[@]}${NC}   Keepers: ${BOLD}$total${NC}   Verified in vault: ${BOLD}$verified${NC} ${GREEN}(read-back SHA256)${NC}"
+  local nonkeep=$(( ${#all_raws[@]} - total ))
+  (( nonkeep > 0 )) && echo -e "    ${GRAY}$nonkeep non-keeper RAW(s) will be discarded when you format — that's expected if you culled them.${NC}"
+
+  R_RAWS=$((R_RAWS + ${#all_raws[@]}))
+  R_KEEPERS=$((R_KEEPERS + total))
+  R_VERIFIED=$((R_VERIFIED + verified))
+  if (( ${#missing[@]} > 0 )); then
+    echo -e "    ${RED}${#missing[@]} keeper(s) NOT confirmed:${NC}"
+    printf '      %s\n' "${missing[@]}"
+    R_MISSING=$((R_MISSING + ${#missing[@]}))
+    return 1
+  fi
+  return 0
+}
+
+run_reconcile() {
+  local FOLDER="${1:-}"
+  echo ""
+  echo -e "${BOLD}RECONCILE${NC} ${GRAY}— pre-wipe verification${NC}"
+
+  if [[ ! -s "$BACKUP_INDEX" ]]; then
+    err "UNSAFE — the backup index is empty. Nothing has been archived yet."
+    echo -e "  ${GRAY}Run 'ingest backup' first. Refusing to call an unbacked card safe.${NC}" >&2
+    export_state_json "unsafe"
+    exit 1
+  fi
+
+  detect_card_soft
+  [ -n "${CARD:-}" ] && echo -e "  ${GRAY}Card present ($CARD_ID) — verifying against the original frames on the card.${NC}" \
+                     || echo -e "  ${YELLOW}No card inserted — verifying against the staged copies (insert the card for the strongest check).${NC}"
+
+  # Which folders to check?
+  local FOLDERS=()
+  if [ -n "$FOLDER" ]; then
+    [ -d "$FOLDER" ] || die "No such folder: $FOLDER"
+    FOLDERS=("$FOLDER")
+  else
+    # Card-wide: every ledger session for THIS card whose folder still exists.
+    # (If no card, fall back to the latest session only.)
+    local line sdir scard sstatus
+    while IFS=$'\t' read -r _ _ scard _ _ sdir sstatus; do
+      [ -d "$sdir" ] || continue
+      if [ -n "${CARD_ID:-}" ]; then [ "$scard" = "$CARD_ID" ] || continue; fi
+      FOLDERS+=("$sdir")
+    done < "$LEDGER"
+    if (( ${#FOLDERS[@]} == 0 )); then
+      local last; last=$(awk -F'\t' 'NF>=6{v=$6} END{print v}' "$LEDGER")
+      [ -d "$last" ] && FOLDERS=("$last")
+    fi
+    # de-dup while preserving order
+    local seen=() uniq=() fdir keep
+    for fdir in "${FOLDERS[@]}"; do
+      keep=1; for s in "${seen[@]:-}"; do [ "$s" = "$fdir" ] && keep=0; done
+      (( keep )) && { uniq+=("$fdir"); seen+=("$fdir"); }
+    done
+    FOLDERS=("${uniq[@]}")
+  fi
+
+  (( ${#FOLDERS[@]} == 0 )) && die "No staged sessions found to reconcile."
+
+  stage "VERIFYING ${#FOLDERS[@]} SESSION(S)"
+  R_RAWS=0; R_KEEPERS=0; R_VERIFIED=0; R_MISSING=0
+  local all_ok=1 fdir
+  for fdir in "${FOLDERS[@]}"; do
+    verify_one_session "$fdir" || all_ok=0
+    echo ""
+  done
+
+  stage "VERDICT"
+  echo -e "  Keepers evaluated : ${BOLD}$R_KEEPERS${NC} across ${#FOLDERS[@]} session(s)"
+  echo -e "  Verified in vault : ${BOLD}$R_VERIFIED${NC} ${GREEN}(read-back SHA256)${NC}"
+
+  if (( all_ok == 1 && R_MISSING == 0 && R_KEEPERS > 0 )); then
+    echo ""
+    echo -e "  ${GREEN}${BOLD}✓ SAFE TO FORMAT CARD${NC} — every keeper re-read and byte-matched in your vault."
+    echo -e "  ${GRAY}You may now format the card in your camera.${NC}\n"
+    # mark verified sessions
+    if [ -z "$FOLDER" ]; then
+      local tmp; tmp="$(mktemp_tracked)"
+      awk -F'\t' -v ids="$(printf '%s\n' "${FOLDERS[@]}")" 'BEGIN{OFS="\t"; n=split(ids,a,"\n"); for(k=1;k<=n;k++)v[a[k]]=1} {if($6 in v)$7="VERIFIED"} 1' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
+    fi
+    export_state_json "safe"
+  else
+    echo ""
+    if (( R_KEEPERS == 0 )); then
+      err "NOT SAFE — no keepers were found to verify. Did the offload run? Are RAW formats recognised?"
+    else
+      err "NOT SAFE TO WIPE CARD — $R_MISSING keeper(s) are not confirmed in the vault (listed above)."
+    fi
+    echo -e "  ${GRAY}Action: run 'ingest backup' and reconcile again before formatting.${NC}\n"
+    export_state_json "pending"
+    exit 1
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 8. RESTORE — RE-DOWNLOAD A PAST SESSION FROM THE CARD
+# ═══════════════════════════════════════════════════════════════
+# The recovery case this tool exists for: the storage holding a session's
+# originals is lost, stolen or corrupted — but the card was never formatted.
+# Plug it back in and pull that session's keepers off the card again.
+#
+# The per-file record can come from two places, and they die in DIFFERENT
+# disasters — which is the whole reason both are consulted:
+#   1. the session manifest — lives INSIDE the staging folder, so it is gone
+#      exactly when the drive we are recovering from is gone. Richest when it
+#      survives: Finder tags still say which frames were keepers.
+#   2. backups.tsv — lives in $CFG_DIR on this Mac, so it survives the loss of
+#      staging AND vault. Every row is a keeper by definition, carrying the
+#      sha256 recorded at archive time.
+# We take whichever exists, manifest first. When neither does we refuse. There
+# is no honest way to tell which frames on a card belonged to a session, and
+# guessing by date would hand back culled frames while calling it a restore.
+
+# Wanted files for a session, as "filename<TAB>sha256" rows on stdout.
+# Sets RESTORE_SRC to the record we used. Returns 1 when there is no record.
+restore_wanted() { # $1 session_id  $2 staging_folder (may be gone)
+  local sid="$1" folder="${2:-}" mp="" base
+  RESTORE_SRC=""
+
+  [ -n "$folder" ] && mp="$(manifest_path "$folder")"
+  if [ -n "$mp" ] && [ -f "$mp" ]; then
+    RESTORE_SRC="session manifest"
+    while IFS= read -r base; do
+      [ -n "$base" ] || continue
+      awk -F'\t' -v b="$base" \
+        '{n=$1; sub(/\.[^.]*$/,"",n); if(n==b && $3!=""){print $1"\t"$3; exit}}' "$mp"
+    done < <(session_keepers "$folder")
+    return 0
+  fi
+
+  if [ -s "$BACKUP_INDEX" ] && awk -F'\t' -v s="$sid" '$1==s{f=1} END{exit !f}' "$BACKUP_INDEX"; then
+    RESTORE_SRC="backup index"
+    # Newest recorded hash wins if a frame was archived more than once.
+    awk -F'\t' -v s="$sid" 'NF>=5 && $1==s { if ($5 >= ts[$2]) { ts[$2]=$5; sha[$2]=$3 } }
+                            END { for (f in sha) print f "\t" sha[f] }' "$BACKUP_INDEX" | sort
+    return 0
+  fi
+
+  return 1
+}
+
+# Human label for where a session's file record would come from.
+restore_source_label() { # $1 session_id  $2 folder
+  local sid="$1" folder="${2:-}"
+  if [ -n "$folder" ] && [ -f "$(manifest_path "$folder")" ]; then
+    printf 'session manifest'
+  elif [ -s "$BACKUP_INDEX" ] && awk -F'\t' -v s="$sid" '$1==s{f=1} END{exit !f}' "$BACKUP_INDEX"; then
+    printf 'backup index'
+  else
+    printf 'no record'
+  fi
+}
+
+run_restore() {
+  local DRY=0 rargs=() a
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|--plan) DRY=1 ;;
+      "") ;;
+      *) rargs+=("$a") ;;
+    esac
+  done
+  local WANT_SID="" DEST=""
+  (( ${#rargs[@]} >= 1 )) && WANT_SID="$(printf '%s' "${rargs[0]}" | tr '[:lower:]' '[:upper:]')"
+  (( ${#rargs[@]} >= 2 )) && DEST="${rargs[1]}"
+
+  detect_card
+  echo ""
+  echo -e "${BOLD}RESTORE${NC} ${GRAY}— re-download a past session from the card${NC}"
+  echo -e "  ${BOLD}CARD $CARD_ID${NC}  ${GRAY}($CARD)${NC}"
+  [ -s "$LEDGER" ] || die "No sessions on record — there is nothing to restore."
+
+  # ── Pick the session ────────────────────────────────────────
+  # Only browsed when the caller did not name one. An explicit id is resolved
+  # straight from the ledger so that asking for a session with the wrong card
+  # inserted reports exactly that, rather than "no sessions for this card".
+  local l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest
+  if [ -z "$WANT_SID" ]; then
+    # Only this card's own sessions are offered: another card's frames are not
+    # on this card, and every hash would fail anyway.
+    local c_ids=() c_dates=() c_frames=() c_dirs=() c_src=()
+    while IFS=$'\t' read -r l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest; do
+      case "$l_sid" in SES-*) ;; *) continue ;; esac
+      [ "$l_card" = "$CARD_ID" ] || continue
+      [ "${l_status:-}" = "RESTORED" ] && continue   # never restore a restore
+      c_ids+=("$l_sid"); c_dates+=("$l_dates"); c_frames+=("$l_frames"); c_dirs+=("$l_dir")
+      c_src+=("$(restore_source_label "$l_sid" "$l_dir")")
+    done < "$LEDGER"
+
+    (( ${#c_ids[@]} > 0 )) || die "No sessions recorded for CARD $CARD_ID — nothing to restore."
+
+    echo ""
+    echo -e "  ${DIM}Sessions pulled from this card:${NC}"
+    local k
+    for (( k=${#c_ids[@]}-1; k>=0; k-- )); do
+      local here="${GRAY}originals gone${NC}"
+      [ -d "${c_dirs[$k]}" ] && here="${GRAY}originals still on disk${NC}"
+      printf "    %d) %-9s  %-26s %4s frames  ${GRAY}[%s]${NC}  %b\n" \
+        $(( ${#c_ids[@]} - k )) "${c_ids[$k]}" "${c_dates[$k]}" "${c_frames[$k]}" "${c_src[$k]}" "$here"
+    done
+    echo ""
+    local pick; pick="$(read_choice "  Restore which session [1-${#c_ids[@]}]: " "${#c_ids[@]}")"
+    WANT_SID="${c_ids[$(( ${#c_ids[@]} - pick ))]}"
+  fi
+
+  local row; row=$(awk -F'\t' -v s="$WANT_SID" '$2==s{r=$0} END{print r}' "$LEDGER")
+  [ -n "$row" ] || die "Unknown session $WANT_SID."
+  IFS=$'\t' read -r l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest <<< "$row"
+
+  if [ "$l_card" != "$CARD_ID" ]; then
+    die "$l_sid was pulled from CARD $l_card, but CARD $CARD_ID is inserted.
+     Insert CARD $l_card and run this again."
+  fi
+
+  # ── What did that session consist of? ───────────────────────
+  local wanted; wanted="$(mktemp_tracked)"
+  if ! restore_wanted "$l_sid" "$l_dir" > "$wanted"; then
+    err "No per-file record survives for $l_sid."
+    echo -e "  ${GRAY}Its manifest died with $l_dir, and nothing from it was ever archived,"
+    echo -e "  so there is no record of which frames it held. Refusing to guess by date —"
+    echo -e "  that would hand back frames you culled and call it a restore.${NC}"
+    echo -e "  ${GRAY}To pull everything on the card instead: ${BOLD}ingest${NC}${GRAY} (choose 'Everything on the card').${NC}\n"
+    exit 1
+  fi
+  local want_n; want_n=$(wc -l < "$wanted" | tr -d ' ')
+  (( want_n > 0 )) || die "$l_sid has a record but it lists no frames."
+
+  echo ""
+  echo -e "  Restoring ${BOLD}$l_sid${NC} ${GRAY}($l_dates · $l_frames frames at pull time)${NC}"
+  echo -e "  Frame list from : ${BOLD}$RESTORE_SRC${NC} ${GRAY}($want_n keeper(s) on record)${NC}"
+
+  # ── Match the record against what is physically on the card ──
+  # Cameras reuse filenames after a folder rollover or a format, so a filename
+  # hit means nothing on its own. Every candidate is hashed and only an exact
+  # sha256 match counts as the original frame.
+  stage "MATCHING $want_n KEEPER(S) AGAINST THE CARD"
+  local index; index="$(mktemp_tracked)"
+  local p
+  while IFS= read -r -d '' p; do
+    printf '%s\t%s\n' "${p##*/}" "$p"
+  done < <(find "$CARD/DCIM" -type f ! -name '._*' -print0 2>/dev/null) > "$index"
+
+  local plan; plan="$(mktemp_tracked)"
+  local n_ok=0 n_bad=0 n_gone=0 i=0
+  local fname sha match seen cand csha
+  while IFS=$'\t' read -r fname sha; do
+    [ -n "$fname" ] || continue
+    i=$((i + 1)); progress_bar "$i" "$want_n" "$fname"
+    match=""; seen=0
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      seen=1
+      csha="$(sha_file "$cand")"
+      if [ "$csha" = "$sha" ]; then match="$cand"; break; fi
+    done < <(awk -F'\t' -v f="$fname" '$1==f{print $2}' "$index")
+    if [ -n "$match" ]; then
+      printf 'OK\t%s\t%s\t%s\n' "$fname" "$sha" "$match" >> "$plan"; n_ok=$((n_ok + 1))
+    elif (( seen )); then
+      printf 'MISMATCH\t%s\t%s\t\n' "$fname" "$sha" >> "$plan"; n_bad=$((n_bad + 1))
+    else
+      printf 'MISSING\t%s\t%s\t\n' "$fname" "$sha" >> "$plan"; n_gone=$((n_gone + 1))
+    fi
+  done < "$wanted"
+  printf "\n"
+
+  echo -e "  Recoverable  : ${BOLD}$n_ok${NC} ${GREEN}(byte-identical on the card)${NC}"
+  (( n_bad > 0 )) && echo -e "  Name reused  : ${BOLD}$n_bad${NC} ${YELLOW}(a different frame now holds that filename)${NC}"
+  (( n_gone > 0 )) && echo -e "  Gone         : ${BOLD}$n_gone${NC} ${RED}(no longer on this card)${NC}"
+  if (( n_bad > 0 || n_gone > 0 )); then
+    echo ""
+    warn "  These cannot be recovered from this card:"
+    awk -F'\t' '$1!="OK"{printf "      %-10s %s\n", $1, $2}' "$plan" >&2
+  fi
+
+  if (( n_ok == 0 )); then
+    echo ""
+    err "Nothing from $l_sid is still on this card. Nothing was written."
+    echo ""
+    exit 1
+  fi
+
+  if (( DRY )); then
+    echo ""
+    echo -e "  ${GRAY}Dry run — nothing copied. Re-run without --dry-run to restore.${NC}\n"
+    return 0
+  fi
+
+  # ── Restore into a NEW session ──────────────────────────────
+  # Always a new folder and a new session id: a restore is a distinct event
+  # from the pull it recovers, and overwriting a half-recovered directory is
+  # how you lose the one good copy you had left.
+  local RESTORE_ROOT="${DEST:-$STAGING_ROOT}"
+  mkdir -p "$RESTORE_ROOT" 2>/dev/null || die "Cannot write to $RESTORE_ROOT. Is the drive mounted?"
+  local saved_root="$STAGING_ROOT"
+  STAGING_ROOT="$RESTORE_ROOT"                  # create_session_dir builds under STAGING_ROOT
+  create_session_dir "restored-from-${l_sid}"
+  STAGING_ROOT="$saved_root"
+
+  local MANIFEST; MANIFEST="$(manifest_path "$CURRENT_SESSION_DIR")"
+  : > "$MANIFEST"
+
+  stage "RESTORING $n_ok FRAME(S) → $CURRENT_SESSION_DIR"
+  local t0=$SECONDS j=0 done_n=0 failed=()
+  local st src dst dsha
+  while IFS=$'\t' read -r st fname sha src; do
+    [ "$st" = "OK" ] || continue
+    j=$((j + 1)); progress_bar "$j" "$n_ok" "$fname"
+    if ! rsync -t "$src" "$CURRENT_SESSION_DIR/" 2>/dev/null; then
+      failed+=("$fname (copy failed)"); continue
+    fi
+    # READ-BACK: the restored file must hash to the sha we recorded years ago,
+    # not merely to whatever we just read off the card.
+    dst="$CURRENT_SESSION_DIR/$fname"
+    dsha="$(sha_file "$dst")"
+    if [ -z "$dsha" ] || [ "$dsha" != "$sha" ]; then
+      failed+=("$fname (restored copy hash mismatch)"); rm -f "$dst"; continue
+    fi
+    printf "%s\t%s\t%s\t%s\t%s\t%s\tPENDING\n" \
+      "$fname" "$(file_size "$dst")" "$dsha" "$CARD_ID" "$CURRENT_SESSION_ID" "$src" >> "$MANIFEST"
+    done_n=$((done_n + 1))
+  done < "$plan"
+  printf "\n"
+
+  if (( ${#failed[@]} > 0 )); then
+    err "${#failed[@]} frame(s) FAILED to restore and were NOT recorded:"
+    printf '    %s\n' "${failed[@]}" >&2
+  fi
+
+  if (( done_n == 0 )); then
+    rmdir "$CURRENT_SESSION_DIR" 2>/dev/null || true
+    export_state_json "pending"
+    die "No frames were restored. Nothing was recorded; your card is unchanged."
+  fi
+
+  # Durable ledger row. Column 7 is RESTORED, never VERIFIED — these frames are
+  # back on disk but they are NOT in a vault, so this session must not read as
+  # safe to format. Column 8+ carries tagged key=value fields so later columns
+  # can be added independently of each other.
+  printf "%s\t%s\t%s\t%s\t%s\t%s\tRESTORED\trestored_from=%s\n" \
+    "$(date +'%Y-%m-%d %H:%M:%S')" "$CURRENT_SESSION_ID" "$CARD_ID" "$l_dates" \
+    "$done_n" "$CURRENT_SESSION_DIR" "$l_sid" >> "$LEDGER"
+
+  # NB: the rolling watermark is deliberately NOT advanced. A restore re-reads
+  # old frames; it is not a pull of new ones, and moving the watermark here
+  # would make the next real ingest skip frames it has never seen.
+
+  ok "$done_n frame(s) restored & hash-verified in $(human_duration $((SECONDS - t0)))"
+  echo -e "  ${GRAY}$CURRENT_SESSION_ID ← recovered from $l_sid${NC}"
+
+  run_peel "$CURRENT_SESSION_DIR"
+
+  echo ""
+  warn "These frames are NOT archived. You have the card and this one copy."
+  echo -e "  ${BOLD}Next:${NC} run ${BOLD}ingest backup${NC} to get them into a vault, then ${BOLD}ingest reconcile${NC}."
+  echo ""
+  export_state_json "staged"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 9. SAFE EJECT
+# ═══════════════════════════════════════════════════════════════
+run_eject() {
+  detect_card
+  echo -e "  ${CYAN}Unmounting ${BOLD}$CARD${NC}..."
+  if command -v diskutil &>/dev/null; then
+    if diskutil unmount "$CARD" 2>&1 | sed 's/^/    /'; then
+      ok "Card safely ejected. You may remove the SD card."
+      export_state_json "no_card"
+    else
+      err "Failed to unmount $CARD. Close any apps using it and retry."
+      exit 1
+    fi
+  else
+    if umount "$CARD" 2>&1 | sed 's/^/    /'; then ok "Unmounted."; else err "Failed to unmount."; exit 1; fi
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 8b. NAME / RENAME the inserted card (browser-first friendly)
+# ═══════════════════════════════════════════════════════════════
+run_name() {
+  local newname="${1:-}" newcolor="${2:-}"
+  detect_card   # requires a card; read-only identity
+  if [ -n "$newcolor" ] && ! _valid_card_color "$newcolor"; then
+    die "Unknown card colour '$newcolor'. Choose one of: $CARD_PALETTE"
+  fi
+  if [ -z "$newname" ]; then
+    [ -t 0 ] || die "Usage: ingest name <NAME>"
+    printf "New name for this card [currently %s]: " "$CARD_ID" >&2
+    IFS= read -r newname || true
+  fi
+  newname=$(printf '%s' "$newname" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]' | sed 's/[^A-Z0-9_-]//g')
+  [ -z "$newname" ] && die "No valid name given (letters, digits, - and _ only)."
+
+  local old="${CARD_ID:-}"
+  if ! printf '%s\n' "$newname" > "$CARD/.card_id" 2>/dev/null; then
+    die "Could not write .card_id to $CARD (card read-only or unplugged?)."
+  fi
+  # Carry the rolling watermark over to the new name if we're renaming.
+  if [ -n "$old" ] && [ "$old" != "$newname" ] && [ -e "$WATERMARKS_DIR/$old.watermark" ]; then
+    mv "$WATERMARKS_DIR/$old.watermark" "$WATERMARKS_DIR/$newname.watermark" 2>/dev/null || true
+  fi
+  if ! grep -q "^$newname	" "$CARDS_REGISTRY" 2>/dev/null; then
+    local size_h; size_h=$(df -Ph "$CARD" 2>/dev/null | awk 'NR==2 {print $2}')
+    printf "%s\t%s\t%s\t%s\t0\t0\n" "$newname" "$newname (${size_h:-?})" "${size_h:-?}" "$(date +'%Y-%m-%d')" >> "$CARDS_REGISTRY"
+  fi
+  CARD_ID="$newname"; CARD_UNNAMED=0; MARKER="$WATERMARKS_DIR/${CARD_ID}.watermark"
+  # Carry the colour over on rename, or apply a newly chosen one.
+  if [ -n "${newcolor:-}" ]; then
+    _write_card_color "$newcolor" && ok "Card colour set to ${BOLD}$newcolor${NC}"
+  elif [ -n "${CARD_COLOR:-}" ] && [ -n "$old" ] && [ "$old" != "$newname" ]; then
+    _write_card_color "$CARD_COLOR" || true
+  fi
+  ok "Card tagged as ${BOLD}$newname${NC}${old:+${DIM} (was $old)${NC}}"
+  export_state_json "idle"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 8c. REVEAL the latest session folder in Finder (for tagging keepers)
+# ═══════════════════════════════════════════════════════════════
+run_reveal() {
+  local dir="${1:-}"
+  if [ -z "$dir" ]; then
+    [ -s "$LEDGER" ] && dir=$(awk -F'\t' 'NF>=6{v=$6} END{print v}' "$LEDGER")
+    [ -d "$dir" ] || dir="$STAGING_ROOT"
+  fi
+  [ -d "$dir" ] || die "Nothing to reveal yet — pull a session first."
+  if command -v open &>/dev/null; then open "$dir" && ok "Opened $dir"; else echo "$dir"; fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 8d. VAULT — list candidate drives (JSON) and set the vault path
+# ═══════════════════════════════════════════════════════════════
+# Attached, writable volumes that could hold a vault. Excludes the system disk
+# and recovery/boot partitions. JSON on stdout for the dashboard's picker.
+run_volumes() {
+  local first=1 v
+  printf '['
+  for v in $CARD_GLOB; do
+    [ -d "$v" ] || continue
+    case "$v" in *"Macintosh HD"*|*"/Recovery"*|*"/.timemachine"*|*"/com.apple"*) continue ;; esac
+    [ -w "$v" ] || continue
+    local free label has_dcim=false
+    free=$(df -Ph "$v" 2>/dev/null | awk 'NR==2{print $4}')
+    label=$(basename "$v")
+    [ -d "$v/DCIM" ] && has_dcim=true   # likely a camera card — flag it, don't hide it
+    [ "$first" = 1 ] || printf ','
+    first=0
+    printf '{"path":"%s","label":"%s","free":"%s","is_card":%s}' \
+      "$(json_escape "$v")" "$(json_escape "$label")" "$(json_escape "${free:-?}")" "$has_dcim"
+  done
+  printf ']\n'
+}
+
+run_set_vault() {
+  local p="${1:-}"
+  [ -z "$p" ] && die "Usage: ingest set-vault <path>"
+  case "$p" in "~"/*) p="$HOME/${p#\~/}" ;; esac
+  if ! mkdir -p "$p" 2>/dev/null; then die "Cannot create or write to vault at $p (drive mounted & writable?)."; fi
+  VAULT_ROOT="$p"; save_config
+  ok "Vault set to ${BOLD}$VAULT_ROOT${NC}"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 10. DOCTOR — environment self-check
+# ═══════════════════════════════════════════════════════════════
+run_doctor() {
+  echo -e "${BOLD}INGEST DOCTOR${NC}  ${GRAY}v$VERSION${NC}\n"
+  local ok_all=1
+  check() { # $1 label  $2 present(0/1)  $3 note
+    if [ "$2" = "0" ]; then echo -e "  ${GREEN}✓${NC} $1 ${GRAY}$3${NC}"
+    else echo -e "  ${YELLOW}○${NC} $1 ${GRAY}$3${NC}"; fi
+  }
+  command -v shasum   &>/dev/null; check "shasum (integrity hashing)" $? "— required"
+  [ "$(command -v shasum)" ] || ok_all=0
+  command -v rsync    &>/dev/null; check "rsync (verified copy)" $? "— required"
+  command -v exiftool &>/dev/null; check "exiftool (previews + dates)" $? "— recommended: brew install exiftool"
+  command -v sips     &>/dev/null; check "sips (fallback previews)" $? "— macOS built-in"
+  command -v mdfind   &>/dev/null; check "mdfind (Finder tag detection)" $? "— macOS Spotlight"
+  command -v diskutil &>/dev/null; check "diskutil (safe eject)" $? "— macOS built-in"
+  echo ""
+  echo -e "  Config dir : ${BOLD}$CFG_DIR${NC}"
+  echo -e "  Staging    : ${BOLD}$STAGING_ROOT${NC}"
+  echo -e "  Vault      : ${BOLD}${VAULT_ROOT:-<not set — run 'ingest config'>}${NC}"
+  echo -e "  Card glob  : ${BOLD}$CARD_GLOB${NC}"
+  echo ""
+  _scan_cards
+  if (( ${#FOUND_CARDS[@]} > 0 )); then
+    echo -e "  ${GREEN}Cards detected:${NC} ${FOUND_CARDS[*]}"
+  else
+    echo -e "  ${GRAY}No cards currently mounted.${NC}"
+  fi
+  echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 9b. RESET — clear this tool's tracking data (never touches cards/vault)
+# ═══════════════════════════════════════════════════════════════
+# Safe by construction: only removes rows/files this tool owns. Foreign data
+# that may share the config dir (e.g. another tool's coldstore.tsv, last_* files,
+# or non-"SES-" ledger rows) is preserved. Photos on cards and in any backup
+# vault are never touched. --purge-staging additionally deletes staged session
+# folders under STAGING_ROOT; --all also clears saved staging/vault preferences.
+run_reset() {
+  local yes=0 purge=0 all=0 a
+  for a in "$@"; do
+    case "$a" in
+      --yes|-y)        yes=1 ;;
+      --purge-staging) purge=1 ;;
+      --all)           all=1 ;;
+    esac
+  done
+
+  local sess_rows bk_rows wm
+  sess_rows=$(awk -F'\t' '$2 ~ /^SES-[0-9]+$/' "$LEDGER" 2>/dev/null | wc -l | tr -d ' ')
+  bk_rows=$(grep -c . "$BACKUP_INDEX" 2>/dev/null || echo 0)
+  wm=$(find "$WATERMARKS_DIR" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+  echo ""
+  echo -e "${BOLD}RESET INGEST DATA${NC}"
+  echo -e "  Clears: ${BOLD}${sess_rows}${NC} session row(s), ${BOLD}${bk_rows}${NC} backup index row(s), ${BOLD}${wm}${NC} watermark(s), live state, card registry."
+  [ "$all" = 1 ]   && echo -e "  Also clears: staging & vault preferences."
+  if [ "$purge" = 1 ]; then
+    local nfolders; nfolders=$(find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d -name '*_SES-*' 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${RED}Also DELETES ${nfolders} staged session folder(s) under $STAGING_ROOT (photos on disk).${NC}"
+  fi
+  echo -e "  ${GRAY}Photos on your cards and any backup vault are NOT touched.${NC}"
+
+  if [ "$yes" != 1 ]; then
+    confirm "  Proceed with reset?" || { echo -e "  ${GRAY}Cancelled — nothing changed.${NC}\n"; return 0; }
+  fi
+
+  # Ledger: keep only foreign rows (session ids are always SES-NNN).
+  if [ -s "$LEDGER" ]; then
+    local t; t="$(mktemp_tracked)"
+    awk -F'\t' '$2 !~ /^SES-[0-9]+$/' "$LEDGER" > "$t" && mv "$t" "$LEDGER"
+  fi
+  : > "$BACKUP_INDEX"
+  : > "$CARDS_REGISTRY"
+  find "$WATERMARKS_DIR" -type f -delete 2>/dev/null || true
+  rm -f "$STATE_JSON"
+  [ "$all" = 1 ] && : > "$CONF_FILE"
+  if [ "$purge" = 1 ] && [ -d "$STAGING_ROOT" ]; then
+    find "$STAGING_ROOT" -mindepth 1 -maxdepth 1 -type d -name '*_SES-*' -exec rm -rf {} + 2>/dev/null || true
+  fi
+
+  export_state_json "idle"
+  echo ""
+  ok "Reset complete — clean slate."
+  echo ""
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 11. STATE EXPORTER FOR BENTO UI
+# ═══════════════════════════════════════════════════════════════
+json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# Live, side-effect-free card probe → JSON on stdout. Never prompts, never
+# writes (read-only identity), so the dashboard can poll it every few seconds.
+run_probe() {
+  _scan_cards
+  local present=false id="" unnamed=false first_run=false pct=0 free="—" headroom=0 color=""
+  if (( ${#FOUND_CARDS[@]} >= 1 )); then
+    CARD="${FOUND_CARDS[0]}"; _identify_card
+    present=true; id="$CARD_ID"; color="${CARD_COLOR:-}"
+    [ "${CARD_UNNAMED:-0}" = "1" ] && unnamed=true
+    [ -e "$MARKER" ] || first_run=true    # no watermark yet → first pull will ask what's "new"
+    get_card_telemetry; pct=${CARD_PCT:-0}; free="$CARD_FREE_H"; headroom=${CARD_HEADROOM:-0}
+  fi
+  cat <<EOF
+{"card_present": $present, "card_id": "$(json_escape "$id")", "card_unnamed": $unnamed, "card_first_run": $first_run, "card_color": "$(json_escape "$color")", "num_cards": ${#FOUND_CARDS[@]}, "fill_pct": ${pct:-0}, "free_space": "$(json_escape "$free")", "headroom_frames": ${headroom:-0}, "staging_root": "$(json_escape "$STAGING_ROOT")", "vault_root": "$(json_escape "$VAULT_ROOT")"}
+EOF
+}
+
+export_state_json() {
+  local verdict_state="${1:-safe}"
+  local last_backup_time="No backups yet"
+  if [ -s "$BACKUP_INDEX" ]; then
+    last_backup_time=$(awk -F'\t' 'NF>=5{v=$5} END{print v}' "$BACKUP_INDEX")
+  fi
+
+  local card_label="NO CARD" card_pct=0 card_free="—" card_headroom=0
+  if [ -n "${CARD:-}" ] && [ -d "$CARD" ]; then
+    card_label="CARD ${CARD_ID:-?}"
+    get_card_telemetry
+    card_pct=$CARD_PCT; card_free="$CARD_FREE_H"; card_headroom=$CARD_HEADROOM
+  fi
+
+  cat <<EOF > "$STATE_JSON"
+{
+  "version": "$VERSION",
+  "card_id": "$(json_escape "$card_label")",
+  "fill_pct": ${card_pct:-0},
+  "free_space": "$(json_escape "$card_free")",
+  "headroom_frames": ${card_headroom:-0},
+  "verdict": "$(json_escape "$verdict_state")",
+  "last_backup": "$(json_escape "$last_backup_time")",
+  "staging_root": "$(json_escape "$STAGING_ROOT")",
+  "vault_root": "$(json_escape "$VAULT_ROOT")",
+  "exported_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════
+# 12. CLI DISPATCHER
+# ═══════════════════════════════════════════════════════════════
+main() {
+  # Extract global flags (--fast) so they can appear anywhere.
+  FAST=0; BASELINE=""
+  local args=() a
+  for a in "$@"; do
+    case "$a" in
+      --fast) FAST=1 ;;
+      --baseline=*) BASELINE="${a#--baseline=}" ;;
+      *) args+=("$a") ;;
+    esac
+  done
+  set -- "${args[@]:-}"
+
+  local CMD="${1:-ingest}"
+  case "$CMD" in
+    ingest)       shift || true; run_ingest "rolling" "${1:-}" ;;
+    --today|today) shift || true; run_ingest "today" "${1:-}" ;;
+    name|rename|tag) shift || true; run_name "${1:-}" "${2:-}" ;;
+    reveal|open)  shift || true; run_reveal "${1:-}" ;;
+    status)       detect_card; echo ""; echo -e "${BOLD}CARD $CARD_ID${NC}"; show_fill_gauge; show_history; export_state_json "idle" ;;
+    backup|stash) shift || true; run_backup "${1:-}" ;;
+    reconcile)    shift || true; run_reconcile "${1:-}" ;;
+    restore|redownload) shift || true; run_restore "$@" ;;
+    peel)
+      shift || true
+      local peel_dir="${1:-}"
+      if [ -z "$peel_dir" ]; then
+        # default to the latest staged session (consistent with backup/reconcile)
+        [ -s "$LEDGER" ] && peel_dir=$(awk -F'\t' 'NF>=6{v=$6} END{print v}' "$LEDGER")
+        [ -d "$peel_dir" ] || peel_dir="$PWD"
+      fi
+      run_peel "$peel_dir" ;;
+    eject)        run_eject ;;
+    doctor)       run_doctor ;;
+    probe)        run_probe ;;
+    volumes)      run_volumes ;;
+    set-vault)    shift || true; run_set_vault "${1:-}" ;;
+    reset)        shift || true; run_reset "$@" ;;
+    version|--version|-v) echo "ingest v$VERSION" ;;
+    config)
+      echo -e "${BOLD}INGEST CONFIGURATION${NC}"
+      printf "Staging root [%s]: " "$STAGING_ROOT"; IFS= read -r new_s || true
+      [ -n "${new_s:-}" ] && STAGING_ROOT="$new_s"
+      printf "Vault root [%s]: " "$VAULT_ROOT"; IFS= read -r new_v || true
+      [ -n "${new_v:-}" ] && VAULT_ROOT="$new_v"
+      mkdir -p "$STAGING_ROOT"
+      save_config
+      ok "Preferences saved to $CONF_FILE" ;;
+    ui)
+      local here self
+      here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+      self="$here/$(basename "${BASH_SOURCE[0]}")"   # drive THIS binary, not whatever 'ingest' resolves to on PATH
+      local candidates=(
+        "$here/../server/bridge.py"
+        "$CFG_DIR/server/bridge.py"
+        "$here/server/bridge.py"
+      )
+      local bridge=""
+      for c in "${candidates[@]}"; do [ -f "$c" ] && { bridge="$c"; break; }; done
+      if [ -n "$bridge" ]; then
+        command -v python3 &>/dev/null || die "python3 is required for the dashboard."
+        INGEST_CONFIG_DIR="$CFG_DIR" INGEST_BIN="$self" python3 "$bridge"
+      else
+        die "Dashboard server (bridge.py) not found. Looked in: ${candidates[*]}"
+      fi ;;
+    help|--help|-h|*)
+      echo -e "${BOLD}INGEST${NC} v$VERSION — Card Memory & Local Archival Engine"
+      echo ""
+      echo "Usage:"
+      echo "  ingest [slug]                 Rolling offload into a new isolated session directory"
+      echo "  ingest --fast [slug]          Offload ~2× faster (skips the copy-time card re-read)"
+      echo "  ingest --today [slug]         Offload only today's frames (preserves rolling watermark)"
+      echo "  ingest name <NAME>            Set or rename the inserted card's permanent identity"
+      echo "  ingest reveal                 Open the latest session folder in Finder (to tag keepers)"
+      echo "  ingest status                 Read-only card fill gauge, headroom & run history"
+      echo "  ingest backup [vault_path]    Archive keepers to vault with read-back SHA256 verification"
+      echo "  ingest reconcile [folder]     Pre-wipe verification (Safe to Format verdict)"
+      echo "  ingest restore [SES-ID] [dir] Re-download a past session's keepers off the card"
+      echo "  ingest restore --dry-run      Report what is still recoverable, copy nothing"
+      echo "  ingest peel [folder]          Extract embedded JPEG previews for fast Finder tagging"
+      echo "  ingest eject                  Safely unmount active camera SD card"
+      echo "  ingest config                 Configure staging and backup vault directories"
+      echo "  ingest doctor                 Environment self-check"
+      echo "  ingest reset [--all] [--purge-staging]   Clear tracking data (photos on cards/vault untouched)"
+      echo "  ingest ui                     Launch interactive Bento Box dashboard (localhost:7331)"
+      ;;
+  esac
+}
+
+# Allow the file to be sourced for testing without running the dispatcher.
+if [ "${INGEST_LIB:-0}" != "1" ]; then
+  main "$@"
+fi

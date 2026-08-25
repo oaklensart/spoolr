@@ -1,0 +1,1724 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>INGEST — Bento Memory Deck</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap');
+
+    :root {
+      --bg-base: #050507;
+      --bg-panel: #0d0d11;
+      --bg-panel-2: #08080b;
+      --border-dim: #1c1c22;
+      --border-bright: #2e2e38;
+      --text-main: #ffffff;
+      --text-dim: #8b8f9a;
+      --text-muted: #545762;
+      --text-dark: #000000;
+      --safe: #00ff88;
+      --safe-dim: rgba(0, 255, 136, 0.12);
+      --safe-glow: rgba(0, 255, 136, 0.4);
+      --warn: #ffaa00;
+      --warn-rgb: 255, 170, 0;        /* alpha-composited warn, same idiom as --ok-rgb */
+      --warn-dim: rgba(255, 170, 0, 0.12);
+      --warn-glow: rgba(255, 170, 0, 0.4);
+      --danger: #ff3344;
+      --danger-dim: rgba(255, 51, 68, 0.12);
+      --danger-glow: rgba(255, 51, 68, 0.4);
+      --neutral: #6b7280;
+      --neutral-dim: rgba(107, 114, 128, 0.14);
+      /* Brand accent = the inserted card's identity colour. --brand-rgb carries
+         the raw channels so every alpha-composited glow re-themes with the card
+         instead of staying hardwired cyan (same pattern as the oaklens-site
+         --accent / --accent-rgb tokens). Defaults to platinum until a card is
+         chosen; every named card carries a real colour. */
+      --brand: #dce6f5;
+      --brand-rgb: 220, 230, 245;
+      /* --ok is the "working interface" accent: the strokes, LEDs and labels of
+         a healthy deck. Green while no card is mounted; once a card is in, it
+         becomes THAT card's colour, so the whole interface is a constant
+         identity signal — not just the ignition. Warn/danger stay semantic. */
+      --ok: #00ff88;
+      --ok-rgb: 0, 255, 136;
+      --brand-dim: rgba(var(--brand-rgb), 0.12);
+      --brand-glow: rgba(var(--brand-rgb), 0.45);
+      --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --ease: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --r-lg: 24px;
+      --r-md: 14px;
+      --status: var(--safe);
+      --status-dim: var(--safe-dim);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .sr-only {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); border: 0;
+    }
+    button { font-family: inherit; }
+
+    /* ── HEADER ── */
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 1.2rem 2.4rem; border-bottom: 1px solid var(--border-dim);
+      background: rgba(5, 5, 7, 0.88); backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px); position: sticky; top: 0; z-index: 100;
+    }
+    .brand {
+      font-family: var(--font-mono); font-size: 1.2rem; font-weight: 900;
+      letter-spacing: -0.05em; text-transform: uppercase;
+      display: flex; align-items: center; gap: 0.7rem;
+    }
+    .brand-dot {
+      width: 9px; height: 9px; background: var(--brand); border-radius: 1.5px;
+      border: 1px solid rgba(0, 0, 0, 0.9);
+      box-shadow: inset 0 0 2px rgba(255, 255, 255, 0.45), 0 0 12px var(--brand);
+      animation: pulse 3s var(--ease) infinite;
+      transition: transform 0.4s var(--ease), box-shadow 0.4s, background 0.4s;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    .head-right {
+      display: flex; align-items: center; gap: 0.9rem;
+      font-family: var(--font-mono); font-size: 0.72rem;
+    }
+    .conn {
+      display: inline-flex; align-items: center; gap: 0.4rem; color: var(--text-dim);
+      padding: 0.3rem 0.6rem; border: 1px solid var(--border-dim); border-radius: 100px;
+    }
+    .conn-dot { width: 7px; height: 7px; border-radius: 1.5px; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.9); box-shadow: inset 0 0 2px rgba(255,255,255,0.35); transition: 0.3s; }
+    .conn.live .conn-dot { background: var(--ok); box-shadow: inset 0 0 2px rgba(255,255,255,0.45), 0 0 8px var(--ok); }
+    .conn.demo .conn-dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+    .reset-btn {
+      background: transparent; border: 1px solid var(--border-dim); color: var(--text-muted);
+      padding: 0.3rem 0.6rem; border-radius: 100px; cursor: pointer;
+      font-family: var(--font-mono); font-size: 0.68rem; transition: 0.2s;
+    }
+    .reset-btn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-dim); }
+    #vault-btn:hover { border-color: var(--brand); color: var(--brand); background: rgba(var(--brand-rgb), 0.08); }
+    #vault-btn.unset { border-color: var(--warn); color: var(--warn); }
+    .modal .cur-vault {
+      font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-dim);
+      background: var(--bg-panel-2); border: 1px solid var(--border-dim); border-radius: 8px;
+      padding: 0.5rem 0.7rem; margin-bottom: 0.9rem; word-break: break-all;
+    }
+    .modal .opt.card-vol { opacity: 0.7; }
+    .modal .opt .tag { color: var(--warn); font-size: 0.62rem; }
+    .modal .custom { display: flex; gap: 0.5rem; margin-top: 0.6rem; }
+    .modal .custom input {
+      flex: 1; background: #000; border: 1px solid var(--border-bright); color: var(--text-main);
+      font-family: var(--font-mono); font-size: 0.75rem; padding: 0.55rem 0.6rem; border-radius: 8px;
+    }
+    .modal .custom button {
+      background: var(--brand); border: none; color: #000; font-weight: 800;
+      font-family: var(--font-mono); font-size: 0.72rem; padding: 0 0.9rem; border-radius: 8px; cursor: pointer;
+    }
+    .ver { color: var(--text-muted); }
+
+    /* ── SIMULATOR ── */
+    .simulator {
+      padding: 0.75rem 2.4rem; display: flex; gap: 0.7rem; align-items: center;
+      border-bottom: 1px solid var(--border-dim); font-family: var(--font-mono);
+      font-size: 0.72rem; background: #08080a;
+    }
+    .simulator.hidden { display: none; }
+    .sim-btn {
+      background: transparent; border: 1px solid var(--border-dim); color: var(--text-dim);
+      padding: 0.4rem 0.8rem; border-radius: 4px; cursor: pointer;
+      font-family: var(--font-mono); font-size: 0.72rem; transition: 0.2s;
+    }
+    .sim-btn:hover, .sim-btn.active {
+      border-color: var(--text-main); color: var(--text-main); background: rgba(255, 255, 255, 0.08);
+    }
+
+    /* ── MAIN & CARDS ── */
+    main {
+      padding: 2rem 2.4rem; max-width: 1360px; width: 100%;
+      margin: 0 auto; flex: 1; display: flex; flex-direction: column; gap: 1.4rem;
+    }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1.4rem; }
+
+    /* Base Card Box with Ambient Glow */
+    .box {
+      background: radial-gradient(circle at 50% -10%, var(--card-glow, rgba(var(--brand-rgb), 0.02)), transparent 75%), var(--bg-panel);
+      border: 1px solid var(--card-border, var(--border-dim));
+      border-radius: var(--r-lg);
+      padding: 1.8rem;
+      position: relative;
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(12px);
+      animation: in 0.55s var(--ease) forwards;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 var(--card-glow-size, 0px) var(--card-glow-color, transparent);
+      transition: border-color 0.5s var(--ease), box-shadow 0.6s var(--ease), background 0.6s var(--ease);
+    }
+    .box::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, var(--card-top-shine, rgba(255, 255, 255, 0.06)), transparent);
+      pointer-events: none; transition: background 0.5s var(--ease);
+    }
+    @keyframes in { to { opacity: 1; transform: none; } }
+    .label {
+      font-family: var(--font-mono); font-size: 0.7rem; text-transform: uppercase;
+      letter-spacing: 0.1em; color: var(--text-dim);
+      display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    }
+
+    /* ── VERDICT HERO ── */
+    .verdict { grid-column: span 8; display: flex; flex-direction: column; justify-content: space-between; min-height: 210px; }
+    .verdict-title {
+      font-size: clamp(2.4rem, 4.6vw, 4rem); font-weight: 900; letter-spacing: -0.05em; line-height: 0.95;
+      color: var(--status); text-shadow: 0 0 60px var(--status-dim);
+      transition: color 0.5s var(--ease), text-shadow 0.5s var(--ease); margin-bottom: 0.5rem;
+    }
+    body.glow .verdict-title { animation: safeGlow 2.6s ease-in-out infinite; }
+    @keyframes safeGlow { 0%, 100% { text-shadow: 0 0 50px var(--status-dim); } 50% { text-shadow: 0 0 90px var(--status); } }
+    .verdict-sub { font-family: var(--font-mono); color: var(--text-dim); font-size: 0.85rem; line-height: 1.45; max-width: 56ch; }
+    .last-backup {
+      display: inline-flex; align-items: center; gap: 0.45rem; font-family: var(--font-mono); font-size: 0.68rem;
+      font-weight: 700; color: var(--lb, var(--ok)); padding: 0.25rem 0.65rem; background: var(--lbd, rgba(var(--ok-rgb), 0.12));
+      border: 1px solid var(--lbb, rgba(var(--ok-rgb), 0.32)); border-radius: 100px;
+      box-shadow: 0 0 12px var(--lbg, rgba(var(--ok-rgb), 0.22)); transition: 0.5s; white-space: nowrap;
+    }
+    .last-backup .dot { width: 6px; height: 6px; border-radius: 1.5px; background: var(--lb, var(--ok)); border: 1px solid rgba(0,0,0,0.85); box-shadow: inset 0 0 2px rgba(255,255,255,0.4), 0 0 6px var(--lb, var(--ok)); }
+
+    /* ── CARD PANEL & TACHOMETER ── */
+    .card { grid-column: span 4; display: flex; flex-direction: column; justify-content: space-between; min-height: 210px; }
+    .card-id-row { display: flex; align-items: center; gap: 0.5rem; min-height: 1.6rem; }
+    .card-id { font-family: var(--font-mono); font-weight: 800; font-size: 0.95rem; letter-spacing: 0.03em; color: var(--text-main); }
+    .card-edit {
+      background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+      font-size: 0.8rem; padding: 0.1rem 0.3rem; border-radius: 4px; transition: 0.2s;
+    }
+    .card-edit:hover { color: var(--text-main); background: rgba(255, 255, 255, 0.08); }
+    .name-input {
+      background: #000; border: 1px solid var(--border-bright); color: var(--text-main);
+      font-family: var(--font-mono); font-size: 0.85rem; padding: 0.35rem 0.5rem; border-radius: 6px;
+      width: 8rem; text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .name-save {
+      background: var(--brand); border: none; color: #000; font-weight: 800;
+      font-family: var(--font-mono); font-size: 0.72rem; padding: 0.4rem 0.7rem; border-radius: 6px; cursor: pointer;
+    }
+    .name-hint { font-family: var(--font-mono); font-size: 0.66rem; color: var(--warn); margin-top: 0.3rem; }
+    /* Card colour picker — mandatory for a newly named card */
+    .swatches { display: flex; gap: 0.5rem; margin-top: 0.55rem; }
+    .swatch {
+      width: 22px; height: 22px; border-radius: 50%; cursor: pointer; padding: 0;
+      background: var(--sw); border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow: 0 0 7px var(--sw); transition: transform 0.2s var(--ease), box-shadow 0.25s var(--ease);
+    }
+    .swatch:hover { transform: scale(1.14); box-shadow: 0 0 12px var(--sw), 0 0 26px var(--sw); }
+    .swatch.on {
+      transform: scale(1.14);
+      box-shadow: 0 0 12px var(--sw), 0 0 30px var(--sw), 0 0 0 2px var(--bg-panel), 0 0 0 3.5px var(--sw);
+    }
+    .name-save:disabled { opacity: 0.35; cursor: not-allowed; }
+    /* Legacy card with no colour yet — prompt to assign one */
+    .card-edit.pick-color { color: var(--warn); animation: blink 2.4s ease-in-out infinite; }
+    .card-edit.pick-color:hover { color: var(--warn); background: var(--warn-dim); }
+    .gauge-val {
+      font-size: 3.6rem; font-weight: 900; line-height: 0.8; letter-spacing: -0.05em;
+      font-variant-numeric: tabular-nums; transition: color 0.3s;
+    }
+    /* Wedge tachometer: thin at 0%, widens to 100%, pre-baked green→amber→red
+       gradient (fuller card = hotter). Fill reveals the gradient up to fill%. */
+    .wedge { height: 26px; margin: 0.9rem 0 0.55rem; position: relative; }
+    .wedge svg { width: 100%; height: 100%; display: block; overflow: visible; }
+    .wedge .wg-lit { filter: drop-shadow(0 0 5px rgba(0,255,136,.35)) drop-shadow(0 0 16px rgba(0,255,136,.18)); }
+    .gauge-foot { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); }
+
+    /* ── SOUNDBOARD PIPELINE ── */
+    .pipeline { grid-column: span 12; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; }
+    .stage {
+      background: radial-gradient(circle at 50% -10%, var(--stage-glow, rgba(var(--brand-rgb), 0.02)), transparent 75%), var(--bg-panel);
+      border: 1px solid var(--border-dim); border-radius: var(--r-md); padding: 1.3rem;
+      display: flex; flex-direction: column; gap: 0.5rem; min-height: 150px; cursor: pointer; position: relative;
+      transition: border-color 0.4s var(--ease), transform 0.28s var(--ease), background 0.4s var(--ease), box-shadow 0.4s var(--ease), color 0.4s var(--ease);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+    .stage::before {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+      pointer-events: none;
+    }
+    .stage:hover {
+      transform: translateY(-3px); border-color: var(--border-bright);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(var(--brand-rgb), 0.08);
+    }
+    .stage[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .stage .st-top { display: flex; align-items: center; justify-content: space-between; }
+    .st-name {
+      font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--text-dim); transition: color 0.3s;
+    }
+    /* SMD surface-mount LED (Oaklens OS hardware language): square package,
+       dark solder edge, inset specular highlight, coloured bloom. */
+    .st-dot {
+      width: 8px; height: 8px; border-radius: 1.5px; background: var(--border-bright);
+      border: 1px solid rgba(0, 0, 0, 0.9);
+      box-shadow: inset 0 0 2px rgba(255, 255, 255, 0.35);
+      transition: 0.4s var(--ease); flex: none;
+    }
+    .st-main {
+      font-size: 1.35rem; font-weight: 900; letter-spacing: -0.02em;
+      margin-top: auto; transition: color 0.3s, text-shadow 0.3s;
+    }
+    .st-metric { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted); transition: color 0.3s; }
+    .st-arrow {
+      position: absolute; right: -0.72rem; top: 50%; transform: translateY(-50%);
+      color: var(--border-bright); z-index: 2; font-size: 0.9rem; transition: color 0.3s;
+    }
+    .pipeline .stage:last-child .st-arrow { display: none; }
+
+    /* Stage States */
+    .stage.done { border-color: rgba(var(--ok-rgb), 0.45); box-shadow: 0 0 16px rgba(var(--ok-rgb), 0.14); }
+    .stage.done .st-dot { background: var(--ok); box-shadow: inset 0 0 2px rgba(255,255,255,0.45), 0 0 9px var(--ok); }
+    .stage.done .st-main { color: var(--ok); }
+
+    .stage.partial { border-color: rgba(255, 170, 0, 0.4); box-shadow: 0 0 16px rgba(255, 170, 0, 0.12); }
+    .stage.partial .st-dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); animation: blink 1.4s infinite; }
+    .stage.partial .st-main { color: var(--warn); }
+
+    .stage.blocked { border-color: rgba(255, 51, 68, 0.4); box-shadow: 0 0 16px rgba(255, 51, 68, 0.12); }
+    .stage.blocked .st-dot { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
+    .stage.blocked .st-main { color: var(--danger); }
+
+    .stage.ready {
+      background: #ffffff; border-color: #ffffff;
+      box-shadow: 0 0 26px rgba(255, 255, 255, 0.28);
+    }
+    .stage.ready .st-name, .stage.ready .st-metric { color: rgba(0, 0, 0, 0.6); }
+    .stage.ready .st-main { color: #000000; }
+    .stage.ready .st-dot { background: #000000; box-shadow: 0 0 8px rgba(0, 0, 0, 0.3); }
+
+    .stage.running .st-dot { background: var(--brand); box-shadow: inset 0 0 2px rgba(255,255,255,0.4), 0 0 12px var(--brand); animation: smd-data 2s infinite; }
+    /* data-read activity stutter, from the Oaklens OS SMD spec */
+    @keyframes smd-data {
+      0%, 10%, 20%, 100% { opacity: 0.25; }
+      5%, 15% { opacity: 1; box-shadow: inset 0 0 2px rgba(255,255,255,0.4), 0 0 12px var(--brand); }
+    }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+    .stage.busy { pointer-events: none; }
+    .fast-toggle {
+      display: inline-flex; align-items: center; gap: 0.35rem; font-family: var(--font-mono);
+      font-size: 0.6rem; color: rgba(0, 0, 0, 0.5); cursor: pointer; user-select: none;
+    }
+    .stage.ready .fast-toggle input { accent-color: #000; }
+
+    /* ── LEDGER ── */
+    .ledger { grid-column: span 12; }
+    .ses-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 1.1rem; margin-top: 1.4rem; }
+    .ses-card {
+      border: 1px solid var(--border-dim); border-radius: var(--r-md); padding: 1.4rem;
+      display: flex; flex-direction: column; gap: 1.1rem;
+      background: radial-gradient(circle at 50% 0%, rgba(var(--brand-rgb), 0.02), transparent 75%), var(--bg-panel-2);
+      transition: border-color 0.3s, transform 0.3s var(--ease), box-shadow 0.3s;
+      opacity: 0; transform: translateY(10px); animation: in 0.5s var(--ease) forwards;
+    }
+    .ses-card:hover { border-color: var(--border-bright); transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); }
+    .ses-head { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 0.8rem; }
+    .ses-date { color: var(--text-main); font-weight: 700; }
+    .ses-id { color: var(--text-muted); }
+    .ses-data { font-size: 2.3rem; font-weight: 900; letter-spacing: -0.05em; line-height: 1; font-variant-numeric: tabular-nums; }
+    .ses-data small { font-size: 0.95rem; color: var(--text-dim); font-weight: 400; }
+    .ses-foot { display: flex; justify-content: space-between; align-items: center; gap: 0.35rem 0.6rem; flex-wrap: wrap; font-size: 0.7rem; font-weight: 700; font-family: var(--font-mono); }
+    .chip { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .chip .cd { width: 7px; height: 7px; border-radius: 1.5px; border: 1px solid rgba(0,0,0,0.9); box-shadow: inset 0 0 2px rgba(255,255,255,0.4); }
+    .empty { font-family: var(--font-mono); color: var(--text-muted); font-size: 0.85rem; padding: 1.6rem 0; }
+    .ses-card { cursor: pointer; position: relative; }
+    .ses-card.verified { border-color: rgba(var(--ok-rgb), 0.55); }
+    .ses-card:hover { border-color: var(--ok); box-shadow: 0 6px 20px rgba(0,0,0,0.45), 0 0 18px rgba(var(--ok-rgb), 0.18); }
+    .ses-card-tag {
+      font-family: var(--font-mono); font-size: 0.6rem; letter-spacing: 0.1em;
+      color: var(--ok); border: 1px solid rgba(var(--ok-rgb), 0.4); border-radius: 100px;
+      padding: 0.1rem 0.45rem; white-space: nowrap; align-self: center;
+    }
+    .ses-meta { color: var(--text-dim); font-weight: 400; }
+    .ses-card.gone { opacity: 0.6; }
+    .ses-card.gone .ses-data { color: var(--text-dim); }
+    /* A lost session whose frames may still be on the card. This is the one
+       state where a session card is not a dead end, so it gets the only
+       affordance that outranks the card's own identity colour. */
+    .ses-card.recoverable { opacity: 0.85; border-color: rgba(var(--warn-rgb), 0.45); }
+    /* Sits under the footer as a full-width strip rather than floating over the
+       head, where it collided with the card tag. */
+    .ses-card .recover {
+      display: block; width: 100%; margin-top: 0.6rem; text-align: center;
+      font-family: var(--font-mono); font-size: 0.6rem; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--warn); background: rgba(var(--warn-rgb), 0.12);
+      border: 1px solid rgba(var(--warn-rgb), 0.4); border-radius: 3px;
+      padding: 0.32rem 0.4rem; cursor: pointer;
+    }
+    .ses-card .recover:hover { background: rgba(var(--warn-rgb), 0.24); color: var(--text); }
+    .modal .plan {
+      font-family: var(--font-mono); font-size: 0.68rem; line-height: 1.55;
+      white-space: pre-wrap; max-height: 34vh; overflow-y: auto;
+      background: rgba(0,0,0,0.35); border: 1px solid var(--border);
+      border-radius: 4px; padding: 0.6rem 0.7rem; margin-bottom: 0.9rem;
+    }
+    .modal .go {
+      width: 100%; padding: 0.7rem; margin-bottom: 0.5rem; cursor: pointer;
+      font-family: var(--font-mono); font-size: 0.78rem; font-weight: 700;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      color: #000; background: var(--warn); border: none; border-radius: 4px;
+    }
+    .modal .go[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── OAKLENS HOOD ORNAMENT ──
+       A maker's mark set into the empty space beneath the deck: the slanted
+       Oaklens pipes rendered as an embossed, glass-glossed badge with a slow red
+       glow and a periodic light sweep — a hood ornament for the tool. */
+    .ornament {
+      /* Always present — the glow does the animating. (An entrance fade here
+         would delay the mark relative to the deck lighting up.) */
+      flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
+      min-height: 220px; padding: 2.6rem 0 1.6rem; user-select: none;
+    }
+    .oak { display: flex; flex-direction: column; align-items: center; gap: 0.95rem; }
+    /* At rest: no loop, no colored glow — just the chiseled inlay under clear coat.
+       The neon-red glow only rides in with the ignition sequence (.ornament.lit).
+       Heat/cool like a stove coil: a smooth ramp up, a long slow decay down. */
+    .oak-mark {
+      overflow: visible;
+      /* optical centering: the slanted pipes read left-of-centre against the
+         centred wordmark, so nudge the mark right to line the stack up. */
+      transform: translateX(5px);
+      /* NOTE: `filter` only animates when both states declare the SAME function
+         list in the same order — otherwise the browser swaps discretely and the
+         mark just blinks on/off. So the resting state carries all five functions
+         too, at their neutral/zero values. */
+      filter:
+        brightness(1) saturate(1)
+        drop-shadow(0 1px 1px rgba(0, 0, 0, 0.6))
+        drop-shadow(0 0 0 rgba(255, 26, 26, 0))
+        drop-shadow(0 0 0 rgba(255, 10, 10, 0));
+      transition: filter 2.6s cubic-bezier(0.33, 0.05, 0.2, 1);   /* cool down */
+    }
+    .ornament.lit .oak-mark {
+      filter:
+        brightness(2.3) saturate(1.2)
+        drop-shadow(0 0 9px rgba(255, 42, 42, 0.8))
+        drop-shadow(0 0 24px rgba(255, 26, 26, 0.6))
+        drop-shadow(0 0 60px rgba(255, 10, 10, 0.4));
+      transition: filter 1.5s cubic-bezier(0.4, 0, 0.5, 1);       /* heat up */
+    }
+    /* Wordmark, engraved: dark fill, dark top-inner shadow, light bottom lip. */
+    .oak-word {
+      font-family: var(--font-mono); font-size: 0.74rem; font-weight: 700;
+      letter-spacing: 0.62em; padding-left: 0.62em; text-transform: uppercase;
+      color: #2c313b;
+      text-shadow: 0 -1px 1px rgba(0, 0, 0, 0.9), 0 1px 0.5px rgba(255, 255, 255, 0.15);
+      transition: color 2.6s cubic-bezier(0.33, 0.05, 0.2, 1), text-shadow 2.6s cubic-bezier(0.33, 0.05, 0.2, 1);
+    }
+    .oak-sub {
+      font-family: var(--font-mono); font-size: 0.58rem; font-weight: 500;
+      letter-spacing: 0.36em; padding-left: 0.36em; text-transform: uppercase;
+      color: #22262e; text-shadow: 0 1px 0.5px rgba(255, 255, 255, 0.1);
+      transition: color 2.6s cubic-bezier(0.33, 0.05, 0.2, 1), text-shadow 2.6s cubic-bezier(0.33, 0.05, 0.2, 1);
+    }
+    .ornament.lit .oak-word {
+      color: #ff5a4d;
+      text-shadow: 0 0 12px rgba(255, 42, 42, 0.85), 0 0 28px rgba(255, 20, 20, 0.5);
+      transition: color 1.5s cubic-bezier(0.4, 0, 0.5, 1), text-shadow 1.5s cubic-bezier(0.4, 0, 0.5, 1);
+    }
+    .ornament.lit .oak-sub {
+      color: #c23b33; text-shadow: 0 0 10px rgba(255, 42, 42, 0.5);
+      transition: color 1.5s cubic-bezier(0.4, 0, 0.5, 1), text-shadow 1.5s cubic-bezier(0.4, 0, 0.5, 1);
+    }
+
+    /* ── MODALS & TOAST ── */
+    .modal-bg {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.78);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 300; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    }
+    .modal {
+      background: var(--bg-panel); border: 1px solid var(--border-bright);
+      border-radius: var(--r-lg); padding: 1.8rem; max-width: 430px; width: 90%;
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6), 0 0 30px rgba(var(--brand-rgb), 0.1);
+    }
+    .modal h3 { font-size: 1.25rem; margin-bottom: 0.4rem; }
+    .modal .m-sub { font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-dim); margin-bottom: 1.2rem; line-height: 1.5; }
+    .modal .opt {
+      display: block; width: 100%; text-align: left; background: var(--bg-panel-2);
+      border: 1px solid var(--border-dim); color: var(--text-main); padding: 0.85rem 1rem;
+      border-radius: var(--r-md); margin-bottom: 0.55rem; cursor: pointer; transition: 0.2s;
+    }
+    .modal .opt:hover { border-color: var(--brand); background: rgba(var(--brand-rgb), 0.08); }
+    .modal .opt b { display: block; font-size: 0.95rem; margin-bottom: 0.15rem; }
+    .modal .opt span { font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-muted); }
+    .modal .cancel {
+      background: none; border: none; color: var(--text-muted); cursor: pointer;
+      font-family: var(--font-mono); font-size: 0.7rem; margin-top: 0.3rem;
+    }
+    #toast {
+      position: fixed; bottom: 1.4rem; left: 50%; transform: translateX(-50%) translateY(20px);
+      background: var(--bg-panel); border: 1px solid var(--border-bright); color: var(--text-main);
+      padding: 0.7rem 1.1rem; border-radius: 100px; font-family: var(--font-mono); font-size: 0.78rem;
+      opacity: 0; pointer-events: none; transition: 0.35s var(--ease); z-index: 200; max-width: 82vw;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(var(--brand-rgb), 0.15);
+    }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+    #console {
+      margin-top: 1rem; background: #070708; border: 1px solid var(--border-dim);
+      border-radius: var(--r-md); font-family: var(--font-mono); font-size: 0.72rem;
+      color: #c8c8c8; white-space: pre-wrap; max-height: 0; overflow: hidden;
+      transition: max-height 0.4s var(--ease); padding: 0 1.1rem;
+    }
+    #console.open { max-height: 280px; overflow: auto; padding: 1.1rem; }
+    .console-toggle {
+      font-family: var(--font-mono); font-size: 0.66rem; color: var(--text-muted);
+      cursor: pointer; background: none; border: none; margin-top: 0.4rem;
+    }
+
+    /* ── IGNITION CINEMATICS & CARD GLOWS ── */
+    /* During ignition the boxes hold still (no entrance fade); each is lit
+       individually by the .surge cascade below. */
+    body.igniting .box { animation: none; opacity: 1; transform: none; }
+    body.ignited:not(.deck-lit) .box {
+      /* Hold the settled state: without pinning animation/opacity here, dropping
+         the .igniting class lets the base `.box { animation: in }` re-fire and every
+         panel (most visibly the ledger) briefly fades out and back in. */
+      animation: none; opacity: 1; transform: none;
+      --card-glow: rgba(var(--brand-rgb), 0.03);
+      --card-border: var(--border-dim);
+      --card-glow-size: 16px;
+      --card-glow-color: rgba(var(--brand-rgb), 0.04);
+      --card-top-shine: rgba(255, 255, 255, 0.08);
+    }
+    body.igniting .brand-dot {
+      animation: none; background: var(--brand);
+      box-shadow: 0 0 28px 6px var(--brand); transform: scale(1.3);
+    }
+
+    /* ── EMISSIVE PANEL BLOOM ──
+       Borrowed look-language from the analogs.network light engine: a filter-free
+       3-tier mip-chain bloom — tight neon halo + soft scatter + wide room glow,
+       weighted ~0.5 / 0.54 / 0.45 like its mip alphas. Each panel lights as a real
+       emissive source, then settles. */
+    .box.surge {
+      --card-glow: rgba(var(--brand-rgb), 0.16);
+      --card-border: rgba(var(--brand-rgb), 0.5);
+      --card-top-shine: rgba(var(--brand-rgb), 0.9);
+      box-shadow:
+        0 0 12px rgba(var(--brand-rgb), 0.5),
+        0 0 40px 2px rgba(var(--brand-rgb), 0.4),
+        0 0 96px 14px rgba(var(--brand-rgb), 0.26),
+        inset 0 0 26px rgba(var(--brand-rgb), 0.12);
+      transform: translateY(-2px);
+      transition: box-shadow 0.16s var(--ease), transform 0.16s var(--ease), background 0.16s, border-color 0.16s;
+    }
+    .stage.channel-test {
+      --stage-glow: rgba(var(--brand-rgb), 0.3);
+      border-color: var(--brand) !important;
+      box-shadow:
+        0 0 12px rgba(var(--brand-rgb), 0.5),
+        0 0 38px 2px rgba(var(--brand-rgb), 0.4),
+        0 0 90px 12px rgba(var(--brand-rgb), 0.24),
+        inset 0 0 18px rgba(var(--brand-rgb), 0.16) !important;
+      transform: translateY(-4px) scale(1.02);
+      transition: box-shadow 0.16s var(--ease), transform 0.16s var(--ease);
+    }
+    .stage.channel-test .st-dot { background: var(--brand) !important; box-shadow: 0 0 20px 4px var(--brand) !important; transform: scale(1.6); }
+    .stage.channel-test .st-main { color: #ffffff !important; text-shadow: 0 0 20px var(--brand); }
+    .stage.channel-test .st-name { color: var(--brand) !important; }
+
+    /* ── IGNITION EASING ──
+       Scoped to the sequence only (hover elsewhere stays snappy): a slow ramp as
+       each panel heats up, and a longer decay as it cools — so the cascade reads
+       as light swelling and falling away, not a strobe. */
+    /* Ramp up accelerates into full brightness; decay eases off gently. */
+    body.igniting .box.surge, body.deck-lit .box.surge,
+    body.igniting .stage.channel-test, body.deck-lit .stage.channel-test {
+      transition: box-shadow 0.72s cubic-bezier(0.5, 0, 0.75, 0.9), transform 0.72s var(--ease),
+                  background 0.72s cubic-bezier(0.5, 0, 0.75, 0.9),
+                  border-color 0.72s cubic-bezier(0.5, 0, 0.75, 0.9);
+    }
+    body.igniting .box, body.deck-lit .box,
+    body.igniting .stage, body.deck-lit .stage {
+      transition: box-shadow 1.28s cubic-bezier(0.16, 0.7, 0.3, 1), transform 1.12s var(--ease),
+                  background 1.28s cubic-bezier(0.16, 0.7, 0.3, 1),
+                  border-color 1.28s cubic-bezier(0.16, 0.7, 0.3, 1);
+    }
+    body.igniting .st-dot, body.deck-lit .st-dot,
+    body.igniting .st-main, body.deck-lit .st-main,
+    body.igniting .st-name, body.deck-lit .st-name {
+      transition: box-shadow 1.12s cubic-bezier(0.16, 0.7, 0.3, 1), background 1.12s cubic-bezier(0.16, 0.7, 0.3, 1),
+                  transform 1.12s var(--ease), color 1.12s cubic-bezier(0.16, 0.7, 0.3, 1),
+                  text-shadow 1.12s cubic-bezier(0.16, 0.7, 0.3, 1);
+    }
+    .st-dot.fire { background: var(--brand) !important; box-shadow: 0 0 20px 3px var(--brand) !important; transform: scale(1.6); }
+    .st-main.flare { animation: flare 1.15s var(--ease); }
+    .verdict-title.flare { animation: flare 1.3s var(--ease); }
+
+    /* ── ACTION RUNNING: spotlight the active stage, dim the rest ── */
+    body.action-running .box,
+    body.action-running .stage:not(.active-run) {
+      /* !important so it wins over the .box/.stage entrance-animation forwards fill */
+      opacity: 0.3 !important; filter: saturate(0.55) brightness(0.55);
+      transition: opacity 0.35s var(--ease), filter 0.35s var(--ease);
+    }
+    .stage.active-run {
+      border-color: var(--brand) !important;
+      transform: translateY(-3px) scale(1.015);
+      animation: runGlow 1.15s ease-in-out infinite;
+      transition: transform 0.25s var(--ease);
+    }
+    .stage.active-run .st-name { color: var(--brand) !important; }
+    .stage.active-run .st-dot {
+      background: var(--brand) !important; transform: scale(1.5);
+      animation: runDot 0.8s ease-in-out infinite;
+    }
+    @keyframes runGlow {
+      0%, 100% { box-shadow: 0 0 14px rgba(var(--brand-rgb),.4), 0 0 44px 3px rgba(var(--brand-rgb),.32), 0 0 96px 14px rgba(var(--brand-rgb),.2), inset 0 0 18px rgba(var(--brand-rgb),.12); }
+      50% { box-shadow: 0 0 20px rgba(var(--brand-rgb),.6), 0 0 66px 6px rgba(var(--brand-rgb),.45), 0 0 130px 22px rgba(var(--brand-rgb),.3), inset 0 0 26px rgba(var(--brand-rgb),.2); }
+    }
+    @keyframes runDot { 0%,100% { box-shadow: 0 0 12px 2px var(--brand); } 50% { box-shadow: 0 0 22px 6px var(--brand); } }
+    @keyframes flare {
+      0% { filter: brightness(1); text-shadow: none; }
+      28% { filter: brightness(2.4); text-shadow: 0 0 30px var(--brand); }
+      100% { filter: none; text-shadow: none; }
+    }
+
+    /* Theme Variables */
+    .t-safe { --status: var(--safe); --status-dim: var(--safe-dim); --gauge: var(--safe); --gauge-dim: var(--safe-dim); }
+    .t-warn { --status: var(--warn); --status-dim: var(--warn-dim); --gauge: var(--warn); --gauge-dim: var(--warn-dim); }
+    .t-danger { --status: var(--danger); --status-dim: var(--danger-dim); --gauge: var(--danger); --gauge-dim: var(--danger-dim); }
+    .t-neutral { --status: var(--neutral); --status-dim: var(--neutral-dim); --gauge: var(--brand); --gauge-dim: var(--brand-dim); }
+
+    @media (max-width: 1000px) {
+      .verdict { grid-column: span 12; }
+      .card { grid-column: span 12; }
+      .pipeline { grid-template-columns: repeat(2, 1fr); }
+      .st-arrow { display: none; }
+    }
+    @media (max-width: 560px) {
+      .pipeline { grid-template-columns: 1fr; }
+      header { padding: 1rem 1.2rem; }
+      main { padding: 1.3rem; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+      .box, .ses-card, .ornament { opacity: 1 !important; transform: none !important; }
+    }
+  </style>
+</head>
+<body class="t-neutral" id="body">
+  <h2 class="sr-only">INGEST dashboard: name your card, then run the offload → peel → tag → backup → reconcile pipeline; each stage lights up as it completes.</h2>
+
+  <header>
+    <div class="brand"><div class="brand-dot"></div> INGEST</div>
+    <div class="head-right">
+      <span class="conn demo" id="conn"><span class="conn-dot"></span><span id="conn-text">DEMO</span></span>
+      <button class="reset-btn" id="vault-btn" onclick="openVaultPicker(false)" title="Choose the drive/folder your keepers get archived to.">⚙ VAULT</button>
+      <button class="reset-btn" id="reset-btn" onclick="resetData()" title="Clear all sessions, backups & watermarks. Photos on cards and in your vault are not touched.">⟲ RESET</button>
+      <span class="ver" id="ver">v1.1.0</span>
+    </div>
+  </header>
+
+  <div class="simulator" id="sim-strip">
+    <span style="color:var(--text-muted);font-weight:700;">DEMO STATES:</span>
+    <button class="sim-btn active" onclick="demo('fresh')">Card inserted</button>
+    <button class="sim-btn" onclick="demo('pulled')">Pulled</button>
+    <button class="sim-btn" onclick="demo('backed')">Backed up</button>
+    <button class="sim-btn" onclick="demo('safe')">Safe</button>
+    <button class="sim-btn" onclick="demo('partial')">Partial peel</button>
+    <button class="sim-btn" onclick="demo('nocard')">No card</button>
+  </div>
+
+  <main>
+    <div class="grid">
+      <!-- VERDICT -->
+      <div class="box verdict" style="animation-delay:.02s">
+        <div class="label"><span id="v-label">WORKFLOW</span>
+          <span class="last-backup" id="lb"><span class="dot"></span><span id="lb-text">LAST BACKUP: —</span></span>
+        </div>
+        <div>
+          <h2 class="verdict-title" id="v-title">Insert a card</h2>
+          <p class="verdict-sub" id="v-sub">Plug in your SD card to begin.</p>
+        </div>
+      </div>
+
+      <!-- CARD -->
+      <div class="box card" style="animation-delay:.08s">
+        <div class="label"><span>CAMERA CARD</span></div>
+        <div class="card-id-row" id="card-id-row"><span class="card-id" id="card-id">—</span></div>
+        <div>
+          <div style="display:flex;align-items:flex-end;gap:.5rem">
+            <span class="gauge-val" id="fill">0</span>
+            <span style="font-family:var(--font-mono);color:var(--text-dim);margin-bottom:.5rem;font-weight:700">% FULL</span>
+          </div>
+          <div class="wedge" id="wedge">
+            <svg viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden="true">
+              <defs>
+                <linearGradient id="wgGrad" x1="0" y1="0" x2="1" y2="0">
+                  <stop offset="0" stop-color="#00e5ff"/>
+                  <stop offset="0.45" stop-color="#00ff88"/>
+                  <stop offset="0.72" stop-color="#ffaa00"/>
+                  <stop offset="1" stop-color="#ff3344"/>
+                </linearGradient>
+                <clipPath id="wgClip"><rect id="wgRect" x="0" y="0" width="0" height="26"/></clipPath>
+              </defs>
+              <polygon points="0,26 100,1 100,26" fill="rgba(255,255,255,0.05)"/>
+              <polygon class="wg-lit" points="0,26 100,1 100,26" fill="url(#wgGrad)" clip-path="url(#wgClip)"/>
+            </svg>
+          </div>
+          <div class="gauge-foot" id="headroom">— frames headroom</div>
+        </div>
+      </div>
+
+      <!-- PIPELINE -->
+      <div class="pipeline" id="pipeline"></div>
+
+      <!-- LEDGER -->
+      <div class="box ledger" style="animation-delay:.24s">
+        <div class="label"><span>SESSION LEDGER</span><span id="ledger-count" style="color:var(--text-muted)"></span></div>
+        <div class="ses-grid" id="ses-grid"></div>
+        <button class="console-toggle" id="console-toggle" onclick="toggleConsole()" style="display:none">▸ show last output</button>
+        <div id="console"></div>
+      </div>
+    </div>
+
+    <!-- OAKLENS HOOD ORNAMENT — maker's mark set into the dead space below the deck -->
+    <div class="ornament" aria-hidden="true">
+      <div class="oak">
+        <svg class="oak-mark" viewBox="0 0 32 32" width="164" height="164">
+          <defs>
+            <!-- deep dark red inlay: oxblood, shadowed top → barely warmer bottom -->
+            <linearGradient id="oakRed" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#1c0303"/>
+              <stop offset="0.5" stop-color="#420a0a"/>
+              <stop offset="1" stop-color="#5e1010"/>
+            </linearGradient>
+            <!-- whisper of clear-coat sheen over the inlay (kept subtle) -->
+            <linearGradient id="oakGloss" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="rgba(255,255,255,0.14)"/>
+              <stop offset="0.55" stop-color="rgba(255,255,255,0.02)"/>
+              <stop offset="1" stop-color="rgba(255,255,255,0)"/>
+            </linearGradient>
+            <clipPath id="oakClip"><path d="M7 26L13 6H16L10 26ZM16 26L22 6H25L19 26Z"/></clipPath>
+            <!-- ENGRAVE: crisp inner shadow on the top edge + faint warm highlight on
+                 the bottom edge → the mark reads as etched INTO the page, like an
+                 inlay on a watch caseback, not a badge sitting on top. -->
+            <filter id="oakChisel" x="-40%" y="-40%" width="180%" height="180%">
+              <feOffset in="SourceAlpha" dx="0" dy="0.9" result="d"/>
+              <feGaussianBlur in="d" stdDeviation="0.4" result="db"/>
+              <feComposite in="SourceAlpha" in2="db" operator="out" result="topband"/>
+              <feFlood flood-color="#000000" flood-opacity="0.95" result="blk"/>
+              <feComposite in="blk" in2="topband" operator="in" result="topshadow"/>
+              <feOffset in="SourceAlpha" dx="0" dy="-0.7" result="u"/>
+              <feGaussianBlur in="u" stdDeviation="0.4" result="ub"/>
+              <feComposite in="SourceAlpha" in2="ub" operator="out" result="botband"/>
+              <feFlood flood-color="#9c2a20" flood-opacity="0.7" result="lite"/>
+              <feComposite in="lite" in2="botband" operator="in" result="bothi"/>
+              <feMerge>
+                <feMergeNode in="SourceGraphic"/>
+                <feMergeNode in="topshadow"/>
+                <feMergeNode in="bothi"/>
+              </feMerge>
+            </filter>
+          </defs>
+          <!-- faint lit lip just below the cut — the groove's lower edge in the surface -->
+          <path d="M7 26L13 6H16L10 26ZM16 26L22 6H25L19 26Z" fill="rgba(255,255,255,0.07)" transform="translate(0,0.55)"/>
+          <!-- engraved red pipes -->
+          <path class="oak-pipes" d="M7 26L13 6H16L10 26ZM16 26L22 6H25L19 26Z" fill="url(#oakRed)" filter="url(#oakChisel)"/>
+          <!-- subtle clear-coat gloss, clipped to the pipes -->
+          <rect clip-path="url(#oakClip)" x="0" y="4" width="32" height="10" fill="url(#oakGloss)"/>
+        </svg>
+        <div class="oak-word">OAKLENS</div>
+        <div class="oak-sub">Photography Tools</div>
+      </div>
+    </div>
+  </main>
+
+  <div id="toast"></div>
+
+  <script>
+    "use strict";
+    const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    let LIVE = false, LAST = null, pendingColor = null;
+
+    // ── CARD IDENTITY COLOURS ──
+    // A card's colour rides on the card itself, so the ignition and the whole
+    // interface light up in *that card's* colour. If the glow isn't the colour
+    // you remember for this card, you're holding the wrong card — check before
+    // you format. Must stay in step with CARD_PALETTE in bin/ingest & bridge.py.
+    const PALETTE = {
+      cyanotype:   { hex: '#00e5ff', rgb: [0, 229, 255],   label: 'Cyanotype' },
+      anthotype:   { hex: '#b026ff', rgb: [176, 38, 255],  label: 'Anthotype' },
+      aerochrome:  { hex: '#ff00c8', rgb: [255, 0, 200],   label: 'Aerochrome' },
+      chlorophyll: { hex: '#ccff00', rgb: [204, 255, 0],   label: 'Chlorophyll' },
+      platinum:    { hex: '#dce6f5', rgb: [220, 230, 245], label: 'Platinum' },
+    };
+    const PALETTE_KEYS = ['cyanotype', 'anthotype', 'aerochrome', 'chlorophyll'];
+    const DEFAULT_ACCENT = 'platinum';
+
+    // Crossfade the accent by interpolating raw channels — --brand-rgb feeds
+    // rgba(var(--brand-rgb), a) everywhere, so every glow re-themes at once.
+    let accentRaf = null, curAccent = null, curRGB = PALETTE[DEFAULT_ACCENT].rgb.slice();
+    function applyAccent(key, animate = true) {
+      const p = PALETTE[key] || PALETTE[DEFAULT_ACCENT];
+      const root = document.documentElement;
+      const set = rgb => {
+        const j = rgb.map(Math.round).join(', ');
+        root.style.setProperty('--brand-rgb', j);
+        root.style.setProperty('--brand', `rgb(${j})`);
+        // The healthy-state chrome follows the card too. With no card mounted
+        // (platinum) it falls back to the default green.
+        const neutral = (key === DEFAULT_ACCENT);
+        root.style.setProperty('--ok-rgb', neutral ? '0, 255, 136' : j);
+        root.style.setProperty('--ok', neutral ? '#00ff88' : `rgb(${j})`);
+      };
+      if (accentRaf) cancelAnimationFrame(accentRaf);
+      if (RM || !animate || !curAccent) { curRGB = p.rgb.slice(); curAccent = key; set(curRGB); return; }
+      if (curAccent === key) return;
+      const from = curRGB.slice(), to = p.rgb, t0 = performance.now();
+      curAccent = key;
+      (function s(n) {
+        const q = Math.min(1, (n - t0) / 900);
+        curRGB = from.map((v, i) => v + (to[i] - v) * eo(q));
+        set(curRGB);
+        if (q < 1) accentRaf = requestAnimationFrame(s);
+      })(t0);
+    }
+
+    const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const eo = t => t === 1 ? 1 : 1 - Math.pow(2, -10 * t);
+
+    function countUp(el, to, suf = '') {
+      to = +to || 0;
+      const from = +String(el.dataset.v ?? el.textContent).replace(/[^0-9.-]/g, '') || 0;
+      el.dataset.v = to;
+      if (RM || from === to) {
+        el.textContent = to.toLocaleString() + suf;
+        return;
+      }
+      const t0 = performance.now();
+      (function s(n) {
+        const p = Math.min(1, (n - t0) / 650);
+        const v = from + (to - from) * eo(p);
+        el.textContent = Math.round(v).toLocaleString() + suf;
+        if (p < 1) requestAnimationFrame(s);
+      })(t0);
+    }
+
+    // Wedge gauge fill: tween the clip rect 0..100. The gradient is pre-baked,
+    // so filling just reveals more of it (fuller card → hotter colour).
+    let gaugeRaf = null, gaugeIgniting = false;
+    function setGauge(pct, animate = true) {
+      // While the ignition rubber-band owns the needle, don't let a routine
+      // render snap it to the resting value mid-sweep.
+      if (gaugeIgniting) return;
+      const r = document.getElementById('wgRect');
+      if (!r) return;
+      const to = Math.max(0, Math.min(100, +pct || 0));
+      const from = +r.getAttribute('width') || 0;
+      if (RM || !animate || Math.abs(from - to) < 0.5) { if (gaugeRaf) cancelAnimationFrame(gaugeRaf); r.setAttribute('width', to); return; }
+      if (gaugeRaf) cancelAnimationFrame(gaugeRaf);
+      const t0 = performance.now();
+      (function s(n) {
+        const p = Math.min(1, (n - t0) / 700);
+        r.setAttribute('width', (from + (to - from) * eo(p)).toFixed(2));
+        if (p < 1) gaugeRaf = requestAnimationFrame(s);
+      })(t0);
+    }
+
+    // Ignition tachometer sweep: fade UP to redline, hold, then fade DOWN to the
+    // card's true fill — a clean up-and-down, no rubber-band overshoot. Durations
+    // are handed in so the sweep stays locked to the panel fade-up / hold /
+    // fade-down timeline.
+    const GAUGE_UP = 480, GAUGE_HOLD = 350, GAUGE_DOWN = 720;
+    const eio = t => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;  // ease-in-out
+    // Split into up / down so the needle can PARK at redline indefinitely while
+    // the deck waits for the photographer to name and colour a fresh card.
+    function gaugeUp(upDur = GAUGE_UP) {
+      const r = document.getElementById('wgRect');
+      if (!r) return;
+      if (RM) { r.setAttribute('width', 100); gaugeIgniting = true; return; }
+      if (gaugeRaf) cancelAnimationFrame(gaugeRaf);
+      gaugeIgniting = true;
+      const from = +r.getAttribute('width') || 0, t0 = performance.now();
+      (function s(n) {
+        const p = Math.min(1, (n - t0) / upDur);
+        r.setAttribute('width', (from + (100 - from) * eo(p)).toFixed(2));
+        if (p < 1) gaugeRaf = requestAnimationFrame(s);
+        else r.setAttribute('width', '100');              // park at redline
+      })(t0);
+    }
+
+    function gaugeDown(target, downDur = GAUGE_DOWN) {
+      const r = document.getElementById('wgRect');
+      if (!r) return;
+      target = Math.max(0, Math.min(100, +target || 0));
+      if (RM) { r.setAttribute('width', target); gaugeIgniting = false; return; }
+      if (gaugeRaf) cancelAnimationFrame(gaugeRaf);
+      const from = +r.getAttribute('width') || 100, t0 = performance.now();
+      (function s(n) {
+        const p = Math.min(1, (n - t0) / downDur);
+        r.setAttribute('width', (from + (target - from) * eio(p)).toFixed(2));
+        if (p < 1) gaugeRaf = requestAnimationFrame(s);
+        else { r.setAttribute('width', target.toFixed(2)); gaugeIgniting = false; }
+      })(t0);
+    }
+
+    function igniteGauge(target, upDur = GAUGE_UP, holdDur = GAUGE_HOLD, downDur = GAUGE_DOWN) {
+      gaugeUp(upDur);
+      setTimeout(() => gaugeDown(target, downDur), upDur + holdDur);
+    }
+
+    // Verdict themes & copy
+    const V = {
+      no_card: { t: 'neutral', g: 0, title: 'Insert a card', sub: 'Plug in your SD card to begin.' },
+      idle: { t: 'neutral', g: 0, title: 'Ready', sub: 'Card ready. Pull to offload new frames.' },
+      staged: { t: 'neutral', g: 0, title: 'Staged', sub: 'Frames offloaded. Tag your keepers, then back up to your vault.' },
+      backed: { t: 'warn', g: 0, title: 'Backed Up', sub: 'Keepers archived to vault. Run Reconcile for the final safe-to-format verdict.' },
+      pending: { t: 'warn', g: 0, title: 'Not Verified', sub: 'Keepers are not yet confirmed in the vault. Do not format the card.' },
+      unsafe: { t: 'danger', g: 0, title: 'Unverified', sub: 'Nothing archived yet — refusing to call this card safe.' },
+      full: { t: 'danger', g: 0, title: 'Storage Critical', sub: 'Card is nearly full. Offload and format soon.' },
+      safe: { t: 'safe', g: 1, title: 'Safe to Format', sub: 'Every keeper re-read and byte-matched in your vault. You may format the card.' },
+    };
+
+    function applyVerdict(v) {
+      const c = V[v] || V.idle, body = document.getElementById('body');
+      body.className = 't-' + c.t + (c.g ? ' glow' : '') + (igniting ? ' igniting' : (ignited ? ' ignited' : ''));
+      document.getElementById('v-title').textContent = c.title;
+      document.getElementById('v-sub').textContent = c.sub;
+      document.getElementById('v-label').textContent = 'WORKFLOW // ' + v.toUpperCase();
+    }
+
+    function styleBackup(iso, rel) {
+      const p = document.getElementById('lb'), t = document.getElementById('lb-text');
+      let c = 'var(--ok)', d = 'rgba(var(--ok-rgb), 0.12)', b = 'rgba(var(--ok-rgb), 0.32)', g = 'rgba(var(--ok-rgb), 0.22)', label = rel || '—';
+      if (!iso || iso === 'No backups yet') {
+        c = 'var(--neutral)'; d = 'var(--neutral-dim)'; b = 'rgba(107, 114, 128, 0.3)'; g = 'rgba(107, 114, 128, 0.15)';
+        t.textContent = 'NO BACKUPS YET';
+      } else {
+        const h = (Date.now() - Date.parse(iso.replace('Z', '+00:00'))) / 3.6e6;
+        if (h > 168) {
+          c = 'var(--danger)'; d = 'var(--danger-dim)'; b = 'rgba(255, 51, 68, 0.35)'; g = 'rgba(255, 51, 68, 0.22)';
+        } else if (h > 48) {
+          c = 'var(--warn)'; d = 'var(--warn-dim)'; b = 'rgba(255, 170, 0, 0.3)'; g = 'rgba(255, 170, 0, 0.2)';
+        }
+        t.textContent = 'LAST BACKUP: ' + label.toUpperCase();
+      }
+      p.style.cssText = `--lb:${c};--lbd:${d};--lbb:${b};--lbg:${g}`;
+    }
+
+    // ── NON-DESTRUCTIVE IN-PLACE CARD RENDER ──
+    function renderCard(d) {
+      const row = document.getElementById('card-id-row');
+      if (!d.card_present) {
+        if (row.innerHTML !== '<span class="card-id" id="card-id" style="color:var(--text-muted)">NO CARD</span>') {
+          row.innerHTML = '<span class="card-id" id="card-id" style="color:var(--text-muted)">NO CARD</span>';
+        }
+        // Card pulled mid-naming: clear the picker too, or it lingers over "NO CARD".
+        document.querySelectorAll('.swatches, .name-hint').forEach(e => e.remove());
+        pendingColor = null;
+        if (!igniting) {
+          countUp(document.getElementById('fill'), 0);
+          setGauge(0);
+        }
+        document.getElementById('headroom').textContent = 'insert a card';
+        return;
+      }
+      if (d.card_unnamed) {
+        if (!document.getElementById('name-input')) {
+          row.innerHTML = `<input class="name-input" id="name-input" maxlength="20" placeholder="NAME CARD" value="${esc(d.card_name || '')}">
+            <button class="name-save" id="name-save" onclick="saveName()" disabled>SET</button>`;
+          const inp = document.getElementById('name-input');
+          inp.addEventListener('keydown', e => { if (e.key === 'Enter') saveName(); });
+          setTimeout(() => inp.focus(), 40);
+        }
+        if (!document.querySelector('.swatches')) mountSwatches(row, d.card_color || '');
+        if (!document.querySelector('.name-hint')) {
+          const h = document.createElement('div');
+          h.className = 'name-hint';
+          h.textContent = '↑ name this card and pick its colour so its history sticks';
+          document.querySelector('.swatches').after(h);
+        }
+      } else {
+        document.querySelectorAll('.name-hint, .swatches').forEach(e => e.remove());
+        const expectedHtml = `<span class="card-id" id="card-id">CARD ${esc(d.card_name)}</span>\n          <button class="card-edit" onclick="editName('${esc(d.card_name)}','${esc(d.card_color || '')}')" title="Rename card / set colour">✎</button>${PALETTE_KEYS.includes(d.card_color) ? '' : '<button class="card-edit pick-color" onclick="editName(\'' + esc(d.card_name) + '\',\'\')" title="This card has no colour yet — pick one">◎</button>'}`;
+        // Re-render when the identity (name OR colour) changes, so the
+        // "pick a colour" prompt appears/disappears correctly; otherwise just
+        // touch the text so CSS transitions aren't thrown away.
+        const idSig = (d.card_name || '') + '|' + (d.card_color || '');
+        if (!document.getElementById('card-id') || document.getElementById('name-input') || row.dataset.sig !== idSig) {
+          row.innerHTML = expectedHtml;
+          row.dataset.sig = idSig;
+        } else {
+          document.getElementById('card-id').textContent = 'CARD ' + d.card_name;
+        }
+      }
+
+      if (!igniting) {
+        countUp(document.getElementById('fill'), d.fill_pct);
+        setGauge(+d.fill_pct || 0);
+      }
+      const hr = document.getElementById('headroom');
+      hr.dataset.v = '';
+      countUp(hr, d.headroom_frames || 0, ' frames headroom');
+    }
+
+    // Shared colour picker. A colour is mandatory — the save button stays
+    // disabled until one is selected, so no card (new OR pre-existing) is ever
+    // left wearing the neutral default.
+    function mountSwatches(afterEl, current) {
+      document.querySelectorAll('.swatches').forEach(e => e.remove());
+      const sw = document.createElement('div');
+      sw.className = 'swatches';
+      sw.innerHTML = PALETTE_KEYS.map(k =>
+        `<button class="swatch${k === current ? ' on' : ''}" data-c="${k}" title="${PALETTE[k].label}"
+           aria-label="${PALETTE[k].label}" style="--sw:${PALETTE[k].hex}"></button>`).join('');
+      sw.querySelectorAll('.swatch').forEach(b => b.onclick = () => {
+        sw.querySelectorAll('.swatch').forEach(o => o.classList.remove('on'));
+        b.classList.add('on');
+        pendingColor = b.dataset.c;
+        applyAccent(pendingColor);              // live preview: interface crossfades now
+        const sv = document.getElementById('name-save');
+        if (sv) sv.disabled = false;
+      });
+      afterEl.after(sw);
+      if (PALETTE_KEYS.includes(current)) pendingColor = current;   // keep an existing choice
+      return sw;
+    }
+
+    function editName(cur, curColor) {
+      const row = document.getElementById('card-id-row');
+      row.innerHTML = `<input class="name-input" id="name-input" maxlength="20" value="${esc(cur)}">
+        <button class="name-save" id="name-save" onclick="saveName()" ${PALETTE_KEYS.includes(curColor) ? '' : 'disabled'}>SAVE</button>`;
+      mountSwatches(row, curColor || '');
+      const inp = document.getElementById('name-input');
+      inp.select(); inp.focus();
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter') saveName();
+        if (e.key === 'Escape') { pendingColor = null; fetchState(); }
+      });
+    }
+
+    async function saveName() {
+      const inp = document.getElementById('name-input');
+      if (!inp) return;
+      const name = inp.value.trim().toUpperCase().replace(/[^A-Z0-9_-]/g, '');
+      if (!name) { toast('Enter a name'); return; }
+      if (!pendingColor) { toast('Pick a colour for this card'); return; }
+      if (!LIVE) { toast('Naming needs the live bridge'); return; }
+      toast('Naming card ' + name + '…');
+      try {
+        const r = await fetch('/api/action/name', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, color: pendingColor })
+        });
+        const d = await r.json();
+        toast(d.success ? '✓ card named ' + name : '✗ ' + (d.error || 'failed'));
+        if (d.success) {
+          // The deck is held at max: crossfade it into the card's colour, then
+          // let the sequence finish. If we weren't holding, re-fire instead.
+          const chosen = pendingColor;
+          pendingColor = null;
+          applyAccent(chosen);                       // interface fades into the colour
+          if (d.state) renderState(d.state); else await fetchState();
+          if (releaseIgnition) setTimeout(releaseIgnition, 950);
+          else { applyAccent(chosen, false); ignited = false; ignite(); }
+        } else if (d.state) { renderState(d.state); }
+      } catch (e) { toast('Failed to name card'); }
+    }
+
+    // ── SOUNDBOARD PIPELINE (IN-PLACE RETENTION) ──
+    function stages(d) {
+      const s = (d.sessions && d.sessions[0]) || null;
+      const P = [];
+      // PULL
+      if (!d.card_present && !s) P.push({ key: 'pull', name: 'Pull', cls: '', main: '—', metric: 'no card', act: null });
+      else if (!s) P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: 'Pull Ingest', metric: 'offload new frames', act: 'pull', fast: true });
+      else P.push({ key: 'pull', name: 'Pull', cls: 'done', main: s.frames + ' RAWs', metric: 'offloaded', act: 'pull', fast: true });
+      // PEEL
+      if (!s) P.push({ key: 'peel', name: 'Peel', cls: '', main: '—', metric: 'previews', act: null });
+      else if (s.jpgs >= s.raws && s.raws > 0) P.push({ key: 'peel', name: 'Peel', cls: 'done', main: s.jpgs + ' previews', metric: 'all RAWs peeled', act: 'peel' });
+      else if (s.jpgs > 0) P.push({ key: 'peel', name: 'Peel', cls: 'partial', main: s.jpgs + '/' + s.raws, metric: 'RAWs peeled — click to retry', act: 'peel' });
+      else P.push({ key: 'peel', name: 'Peel', cls: '', main: s.raws + ' RAWs', metric: 'peel previews', act: 'peel' });
+      // TAG (reveal)
+      if (!s) P.push({ key: 'tag', name: 'Tag', cls: '', main: '—', metric: 'in Finder', act: null });
+      else P.push({ key: 'tag', name: 'Tag', cls: '', main: 'Reveal', metric: 'tag keepers in Finder', act: 'reveal' });
+      // BACKUP
+      if (!s) P.push({ key: 'backup', name: 'Backup', cls: '', main: '—', metric: 'collect keepers', act: null });
+      else if (s.backed > 0) P.push({ key: 'backup', name: 'Backup', cls: 'done', main: s.backed + '/' + s.raws, metric: 'keepers saved to vault', act: 'backup' });
+      else P.push({ key: 'backup', name: 'Backup', cls: '', main: '0/' + s.raws, metric: d.vault_set ? 'collect tagged keepers →' : 'set a vault →', act: 'backup' });
+      // RECONCILE
+      const v = d.verdict;
+      if (!s) P.push({ key: 'reconcile', name: 'Reconcile', cls: '', main: '—', metric: 'safe-to-format', act: null });
+      else if (s.status === 'VERIFIED' || v === 'safe') P.push({ key: 'reconcile', name: 'Reconcile', cls: 'done', main: 'SAFE', metric: 'ok to format', act: 'reconcile' });
+      else if (v === 'pending' || v === 'unsafe') P.push({ key: 'reconcile', name: 'Reconcile', cls: 'blocked', main: 'NOT SAFE', metric: 'fix backup first', act: 'reconcile' });
+      else P.push({ key: 'reconcile', name: 'Reconcile', cls: '', main: 'Verify', metric: 'run safe-to-format check', act: 'reconcile' });
+      return P;
+    }
+
+    function renderPipeline(d) {
+      const root = document.getElementById('pipeline');
+      const stList = stages(d);
+
+      // Pre-build structure if not present
+      if (root.children.length !== stList.length) {
+        root.innerHTML = '';
+        stList.forEach((st, i) => {
+          const el = document.createElement('div');
+          el.className = 'stage ' + st.cls;
+          el.style.animationDelay = (.14 + i * .04) + 's';
+          el.dataset.key = st.key;
+          const fast = st.fast ? `<label class="fast-toggle" onclick="event.stopPropagation()"><input type="checkbox" id="fast-cb" ${localStorage.getItem('ingfast') === '1' ? 'checked' : ''} onchange="localStorage.setItem('ingfast',this.checked?'1':'0')">fast</label>` : '';
+          el.innerHTML = `<div class="st-top"><span class="st-name">${i + 1}· ${st.name}</span><span style="display:flex;gap:.5rem;align-items:center">${fast}<span class="st-dot"></span></span></div>
+            <div class="st-main">${st.main}</div><div class="st-metric">${esc(st.metric)}</div><span class="st-arrow">→</span>`;
+          if (!st.act) el.setAttribute('aria-disabled', 'true');
+          else el.onclick = (e) => { if (e.target.closest('.fast-toggle')) return; runStage(st.act, el); };
+          root.appendChild(el);
+        });
+        return;
+      }
+
+      // In-place updates to prevent DOM thrashing and preserve CSS transitions
+      stList.forEach((st, i) => {
+        const el = root.children[i];
+        if (!el) return;
+        el.dataset.key = st.key;
+        if (!igniting && !el.classList.contains('channel-test')) {
+          el.className = 'stage ' + st.cls;
+        }
+        if (!st.act) {
+          el.setAttribute('aria-disabled', 'true');
+          el.onclick = null;
+        } else {
+          el.removeAttribute('aria-disabled');
+          el.onclick = (e) => { if (e.target.closest('.fast-toggle')) return; runStage(st.act, el); };
+        }
+        const nameEl = el.querySelector('.st-name');
+        if (nameEl) nameEl.textContent = `${i + 1}· ${st.name}`;
+        const mainEl = el.querySelector('.st-main');
+        if (mainEl && !igniting) mainEl.textContent = st.main;
+        const metricEl = el.querySelector('.st-metric');
+        if (metricEl) metricEl.textContent = st.metric;
+      });
+    }
+
+    function chooseBaseline() {
+      return new Promise(res => {
+        const bg = document.createElement('div');
+        bg.className = 'modal-bg';
+        bg.innerHTML = `<div class="modal"><h3>First pull for this card</h3>
+          <div class="m-sub">What counts as "new"? This sets the starting line — future pulls only grab frames shot after it.</div>
+          <button class="opt" data-b="all"><b>Everything on the card</b><span>pull all existing frames now</span></button>
+          <button class="opt" data-b="today"><b>Today's shoot</b><span>frames shot since midnight</span></button>
+          <button class="opt" data-b="now"><b>Only from now on</b><span>baseline — pulls 0, captures future shoots</span></button>
+          <button class="cancel">cancel</button></div>`;
+        document.body.appendChild(bg);
+        bg.querySelectorAll('.opt').forEach(b => b.onclick = () => { bg.remove(); res(b.dataset.b); });
+        bg.querySelector('.cancel').onclick = () => { bg.remove(); res(null); };
+        bg.onclick = e => { if (e.target === bg) { bg.remove(); res(null); } };
+      });
+    }
+
+    async function openVaultPicker(thenBackup) {
+      if (!LIVE) { toast('Vault setup needs the live bridge (ingest ui)'); return; }
+      let vols = [];
+      try { vols = (await (await fetch('/api/volumes', { cache: 'no-store' })).json()).volumes || []; } catch (e) {}
+      const cur = (LAST && LAST.vault_root) || '';
+      const opts = vols.map(v => `<button class="opt${v.is_card ? ' card-vol':''}" data-path="${esc(v.path)}/Photos/Archive">
+        <b>${esc(v.label)} ${v.is_card ? '<span class="tag">(camera card?)</span>' : ''}</b>
+        <span>${esc(v.path)}/Photos/Archive · ${esc(v.free)} free</span></button>`).join('')
+        || '<div class="m-sub">No external drives detected. Enter a folder path below.</div>';
+      const bg = document.createElement('div');
+      bg.className = 'modal-bg';
+      bg.innerHTML = `<div class="modal"><h3>Backup vault</h3>
+        <div class="m-sub">Where your verified keepers get archived. Pick an attached drive:</div>
+        ${cur ? `<div class="cur-vault">current: ${esc(cur)}</div>` : ''}
+        ${opts}
+        <div class="custom"><input id="vault-custom" placeholder="/Volumes/Drive/Photos or ~/Backups" value="${esc(cur)}">
+          <button id="vault-custom-set">SET</button></div>
+        <button class="cancel">cancel</button></div>`;
+      document.body.appendChild(bg);
+      const done = path => { bg.remove(); if (path) setVault(path, thenBackup); };
+      bg.querySelectorAll('.opt').forEach(b => b.onclick = () => done(b.dataset.path));
+      bg.querySelector('#vault-custom-set').onclick = () => { const p = document.getElementById('vault-custom').value.trim(); if (p) done(p); };
+      bg.querySelector('#vault-custom').addEventListener('keydown', e => { if (e.key === 'Enter') { const p = e.target.value.trim(); if (p) done(p); } });
+      bg.querySelector('.cancel').onclick = () => bg.remove();
+      bg.onclick = e => { if (e.target === bg) bg.remove(); };
+    }
+
+    async function setVault(path, thenBackup) {
+      toast('Setting vault…');
+      try {
+        const r = await fetch('/api/action/set-vault', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path })
+        });
+        const d = await r.json();
+        showConsole(d.output || '');
+        toast(d.success ? '✓ vault set' : '✗ ' + (d.error || 'could not set vault'));
+        if (d.state) renderState(d.state); else await fetchState();
+        if (d.success && thenBackup) {
+          const el = document.querySelector('.stage[data-key="backup"]');
+          if (el) runStage('backup', el);
+        }
+      } catch (e) { toast('Failed to set vault'); }
+    }
+
+    // Dim every panel except the active one via inline !important (reliable —
+    // the equivalent CSS rule is defeated by the entrance-animation fill on stages).
+    function setActionDim(on, activeEl) {
+      document.querySelectorAll('.box, .stage').forEach(p => {
+        if (on && p !== activeEl) {
+          p.style.transition = 'opacity .3s var(--ease), filter .3s var(--ease)';
+          p.style.setProperty('opacity', '0.3', 'important');
+          p.style.setProperty('filter', 'saturate(.55) brightness(.55)', 'important');
+        } else {
+          p.style.removeProperty('opacity');
+          p.style.removeProperty('filter');
+        }
+      });
+    }
+
+    async function runStage(act, el) {
+      if (!LIVE) { toast('Runs need the live bridge (ingest ui)'); return; }
+      let action = act, body = null;
+      if (act === 'pull') {
+        if (LAST && LAST.card_first_run) { const bl = await chooseBaseline(); if (!bl) return; body = { baseline: bl }; }
+        if (document.getElementById('fast-cb') && document.getElementById('fast-cb').checked) action = 'pull_fast';
+      }
+      if (act === 'backup' && LAST && !LAST.vault_set) { openVaultPicker(true); return; }
+      // Spotlight this stage, dim the rest — makes it obvious the run is in flight.
+      el.classList.add('busy', 'running', 'active-run');
+      document.getElementById('body').classList.add('action-running');
+      setActionDim(true, el);
+      toast('Running ' + act + '…');
+      const clearSpotlight = () => {
+        el.classList.remove('busy', 'running', 'active-run');
+        document.getElementById('body').classList.remove('action-running');
+        setActionDim(false);
+      };
+      try {
+        const opts = { method: 'POST' };
+        if (body) { opts.headers = { 'Content-Type': 'application/json' }; opts.body = JSON.stringify(body); }
+        const r = await fetch('/api/action/' + action, opts);
+        const d = await r.json();
+        clearSpotlight();               // drop the spotlight BEFORE rendering the result
+        showConsole(d.output || '');
+        toast((d.success ? '✓ ' : '✗ ') + act + (d.success ? ' done' : ' — see output'));
+        if (d.state) renderState(d.state);
+      } catch (e) {
+        toast('Demo mode — ' + act + ' not run');
+      } finally {
+        clearSpotlight();               // safety net
+      }
+    }
+
+    // ── SESSION LEDGER ──
+    // A saved session is a historical record: it keeps the colour of the card
+    // that made it, independent of whichever card is mounted now. Clicking one
+    // opens its folder in Finder.
+    function renderSessions(list) {
+      const root = document.getElementById('ses-grid'), cnt = document.getElementById('ledger-count');
+      if (!list || !list.length) {
+        cnt.textContent = '';
+        root.innerHTML = '<div class="empty">No sessions yet. Name your card, then Pull Ingest.</div>';
+        root.dataset.sig = '';
+        return;
+      }
+      cnt.textContent = list.length + ' session' + (list.length > 1 ? 's' : '');
+      const sig = list.map(s => [s.id, s.status, s.backed, s.jpgs, s.raws, s.color, s.exists, s.restore_src].join('~')).join('|');
+      if (root.dataset.sig === sig) return;      // nothing changed — keep the DOM
+      root.dataset.sig = sig;
+
+      root.innerHTML = '';
+      list.forEach((s, i) => {
+        const verified = s.status === 'VERIFIED';
+        const backed = verified || (+s.backed > 0 && +s.backed >= +s.keepers);
+        const gone = s.exists === false;
+        let col, txt;
+        if (verified) { col = 'var(--ok)'; txt = '✓ VERIFIED'; }
+        else if (backed) { col = 'var(--ok)'; txt = '✓ BACKED UP'; }
+        else if (+s.backed > 0) { col = 'var(--warn)'; txt = '◐ ' + s.backed + '/' + s.keepers; }
+        else { col = 'var(--warn)'; txt = '⚠ NOT BACKED'; }
+
+        // A missing folder is only a dead end if nothing can rebuild its frame
+        // list. When something can, the card stops being an epitaph and offers
+        // the one action that still helps: pull the frames off the card again.
+        const recoverable = gone && !!s.restore_src;
+        const c = document.createElement('div');
+        c.className = 'ses-card' + (gone ? ' gone' : '') + (verified ? ' verified' : '')
+                    + (recoverable ? ' recoverable' : '');
+        c.style.animationDelay = (RM ? 0 : i * 0.06) + 's';
+        // Pin this card's own colour locally so it survives interface re-themes.
+        const pal = PALETTE[s.color];
+        if (pal) { c.style.setProperty('--ok', pal.hex); c.style.setProperty('--ok-rgb', pal.rgb.join(', ')); }
+
+        // RAWs are the irreplaceable part. Missing JPEGs are almost always an
+        // intentional cull, so they never raise an alarm on their own.
+        const rawsGone = gone && !backed;
+        const foot = gone
+          ? (backed ? 'in vault · folder moved' : '⚠ folder missing')
+          : (esc(String(s.jpgs)) + ' JPG');
+
+        c.innerHTML = `<div class="ses-head"><span class="ses-date">${esc((s.date || '').split(',')[0])}</span><span class="ses-card-tag">${esc(s.card || '—')}</span></div>
+          <div class="ses-data">${esc(String(s.frames))} <small>RAWs</small></div>
+          <div class="ses-foot"><span class="chip" style="color:${rawsGone ? 'var(--danger)' : col}"><span class="cd" style="background:${rawsGone ? 'var(--danger)' : col}"></span>${rawsGone ? '⚠ UNVERIFIED' : txt}</span>
+          <span class="ses-meta">${esc(s.id)} · ${foot}</span></div>`;
+        c.title = gone ? (s.path || '') + ' — folder no longer at this path' : 'Open ' + (s.path || '') + ' in Finder';
+        c.onclick = () => openSession(s);
+        if (recoverable) {
+          const b = document.createElement('button');
+          b.className = 'recover';
+          b.textContent = '↻ recover';
+          b.title = 'Re-download this session from the card';
+          b.onclick = e => { e.stopPropagation(); openRecovery(s); };
+          c.appendChild(b);
+        }
+        root.appendChild(c);
+      });
+    }
+
+    // ── RECOVERY (re-download a session off the card) ──
+    // Two deliberate steps. The check is read-only and hashes every candidate
+    // frame on the card, so it can take a while on a full card — and its result
+    // is the only honest basis for offering the restore. We never copy first
+    // and report after.
+    async function openRecovery(s) {
+      if (!LIVE) { toast('Recovery needs the live bridge (ingest ui)'); return; }
+
+      const mounted = (LAST && LAST.card_present && LAST.card_name) || '';
+      const wrongCard = mounted !== s.card;
+
+      const bg = document.createElement('div');
+      bg.className = 'modal-bg';
+      const head = `<h3>Recover ${esc(s.id)}</h3>
+        <div class="m-sub">The folder for this session is gone from
+        <b>${esc(s.path || 'its recorded path')}</b>.<br>
+        Its frame list can be rebuilt from the <b>${esc(s.restore_src)}</b> — if the frames are
+        still on <b>CARD ${esc(s.card)}</b>, they can come back.</div>`;
+
+      if (wrongCard) {
+        bg.innerHTML = `<div class="modal">${head}
+          <div class="plan">${mounted
+            ? 'CARD ' + esc(mounted) + ' is in the reader.\nInsert CARD ' + esc(s.card) + ' to recover this session.'
+            : 'No card in the reader.\nInsert CARD ' + esc(s.card) + ' to recover this session.'}</div>
+          <button class="cancel">close</button></div>`;
+        document.body.appendChild(bg);
+        bg.querySelector('.cancel').onclick = () => bg.remove();
+        bg.onclick = e => { if (e.target === bg) bg.remove(); };
+        return;
+      }
+
+      bg.innerHTML = `<div class="modal">${head}
+        <button class="go" id="rec-check">Check what is still on the card</button>
+        <div class="m-sub" style="margin-bottom:0">Reads the card and hash-matches every frame. Copies nothing.</div>
+        <button class="cancel">cancel</button></div>`;
+      document.body.appendChild(bg);
+      const close = () => bg.remove();
+      bg.querySelector('.cancel').onclick = close;
+      bg.onclick = e => { if (e.target === bg) close(); };
+
+      bg.querySelector('#rec-check').onclick = async ev => {
+        ev.target.disabled = true;
+        ev.target.textContent = 'Checking the card…';
+        let d;
+        try {
+          d = await (await fetch('/api/action/restore_plan', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ session: s.id })
+          })).json();
+        } catch (e) { toast('Could not read the card'); close(); return; }
+        showConsole(d.output || '');
+        if (!d.success) { toast('✗ ' + (d.error || 'nothing recoverable')); close(); return; }
+        await showRecoveryPlan(bg, s, d.output || '');
+      };
+    }
+
+    // Step two: the card has been read. Show exactly what came back, then ask
+    // where to put it. Destination must be somewhere already mounted — and
+    // never the card itself, which is the one drive we are recovering FROM.
+    async function showRecoveryPlan(bg, s, planText) {
+      let vols = [];
+      try { vols = (await (await fetch('/api/volumes', { cache: 'no-store' })).json()).volumes || []; } catch (e) {}
+      const staging = (LAST && LAST.staging_root) || '';
+      const opts = [
+        staging ? `<button class="opt" data-path="${esc(staging)}"><b>Staging folder</b><span>${esc(staging)}</span></button>` : '',
+        ...vols.filter(v => !v.is_card).map(v =>
+          `<button class="opt" data-path="${esc(v.path)}"><b>${esc(v.label)}</b><span>${esc(v.path)} · ${esc(v.free)} free</span></button>`)
+      ].filter(Boolean).join('');
+
+      bg.innerHTML = `<div class="modal"><h3>Recover ${esc(s.id)}</h3>
+        <div class="plan">${esc(planText.trim())}</div>
+        <div class="m-sub">Restore into a new session folder on:</div>
+        ${opts || '<div class="m-sub">No writable destination found.</div>'}
+        <button class="cancel">cancel</button></div>`;
+      bg.querySelector('.cancel').onclick = () => bg.remove();
+      bg.onclick = e => { if (e.target === bg) bg.remove(); };
+      bg.querySelectorAll('.opt').forEach(b => b.onclick = () => {
+        const dest = b.dataset.path;
+        bg.remove();
+        runRecovery(s, dest);
+      });
+    }
+
+    async function runRecovery(s, dest) {
+      toast('Recovering ' + s.id + '…');
+      try {
+        const d = await (await fetch('/api/action/restore', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: s.id, dest })
+        })).json();
+        showConsole(d.output || '');
+        toast(d.success ? '✓ ' + s.id + ' recovered — not yet archived' : '✗ ' + (d.error || 'restore failed'));
+        if (d.state) renderState(d.state); else await fetchState();
+      } catch (e) { toast('Restore failed'); }
+    }
+
+    async function openSession(s) {
+      if (!LIVE) { toast('Opening folders needs the live bridge'); return; }
+      if (s.exists === false) {
+        if (s.restore_src) { openRecovery(s); return; }
+        toast(s.backed || s.status === 'VERIFIED'
+          ? '✓ keepers are in your vault — the staging folder has moved'
+          : '✗ folder missing and never backed up: ' + (s.path || ''));
+        return;
+      }
+      try {
+        const r = await fetch('/api/action/reveal', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: s.id })
+        });
+        const d = await r.json();
+        if (!d.success && d.error) toast('✗ ' + d.error);
+      } catch (e) { toast('Could not open folder'); }
+    }
+
+    function sig(d) {
+      const c = { ...d };
+      delete c.last_backup_rel;
+      delete c.exported_at;
+      return JSON.stringify(c);
+    }
+    let lastSig = null;
+
+    // ── IGNITION: emissive panel cascade ──
+    // Each panel lights up individually, in sequence, like studio light panels
+    // powering on — a tight-halo → scatter → room-glow bloom (borrowed from the
+    // analogs.network light engine) — then settles to its true state. The gauge
+    // simply fills to its real value (no needle overshoot).
+    let igniting = false, ignited = false, releaseIgnition = null;
+
+    function ignite() {
+      if (RM || igniting) return;
+      igniting = true;
+      // Claim the gauge immediately so any tween a preceding render() kicked off
+      // (e.g. the live card-insert path renders state, then calls ignite) can't
+      // fight the rubber-band sweep that igniteGauge starts when the card lights.
+      if (gaugeRaf) cancelAnimationFrame(gaugeRaf);
+      gaugeIgniting = true;
+      const body = document.getElementById('body');
+      body.classList.add('igniting');
+      body.classList.remove('ignited');
+
+      // Paint the true content once (gauge + number are held back by the igniting
+      // guard so the cascade below owns them) — the panels light up showing real data.
+      if (LAST) {
+        renderCard(LAST);
+        applyVerdict(LAST.card_present ? LAST.verdict : 'no_card');
+        styleBackup(LAST.last_backup, LAST.last_backup_rel);
+        renderPipeline(LAST);
+        renderSessions(LAST.ledger || LAST.sessions);
+        const vb0 = document.getElementById('vault-btn');
+        if (vb0) vb0.classList.toggle('unset', !LAST.vault_set);
+      }
+
+      const fillEl = document.getElementById('fill');
+      const vt = document.getElementById('v-title');
+      const targetPct = (LAST && LAST.card_present) ? (+LAST.fill_pct || 0) : 0;
+
+      // Reset the gauge + number to zero so ignition reveals them
+      setGauge(0, false); fillEl.dataset.v = '0'; fillEl.textContent = '0';
+
+      // The panels, in visual order: verdict → card → 5 pipeline channels → ledger
+      const panels = [
+        document.querySelector('.verdict'),
+        document.querySelector('.card'),
+        ...document.querySelectorAll('.stage'),
+        document.querySelector('.ledger'),
+      ].filter(Boolean);
+      const ornament = document.querySelector('.ornament');
+      const cardIndex = panels.findIndex(p => p.classList.contains('card'));
+
+      const clearLit = p => {
+        p.classList.remove('channel-test', 'surge');
+        const dot = p.querySelector('.st-dot'), m = p.querySelector('.st-main');
+        if (dot) dot.classList.remove('fire');
+        if (m) m.classList.remove('flare');
+      };
+
+      // ── Shared ignition timeline ──
+      // Everything fades UP together (deck lights on, gauge rises, ornament glows),
+      // holds at the peak, then fades DOWN together (panels sweep out right→left,
+      // gauge eases to the real fill, ornament glow fades).
+      // Cadence: rather than a metronomic stagger, the sweep ACCELERATES as it
+      // builds to max (gaps between panels shrink) and DECELERATES as it decays
+      // (gaps stretch out) — the row reads as one gesture picking up speed and
+      // then easing off, instead of a fixed drumbeat.
+      const START = 260, HOLD = 750;
+      const UP_SPAN = 760;      // whole light-up sweep (was 945 — ~20% quicker)
+      const DOWN_SPAN = 990;    // whole fade-down sweep (was 1240 — ~20% quicker)
+      const n = panels.length;
+      const norm = i => (n > 1 ? i / (n - 1) : 0);
+      const accel = p => 1 - Math.pow(1 - p, 2);   // shrinking gaps → speeds up
+      const decel = p => p * p;                    // growing gaps  → slows down
+      const upAt = i => START + UP_SPAN * accel(norm(i));
+      const cardLitT = upAt(cardIndex);
+      const allLitAt = START + UP_SPAN;                       // last panel on
+      const fadeStart = allLitAt + HOLD;                      // deck starts fading down
+      const gUp = allLitAt - cardLitT;                        // gauge rises until the deck is fully lit
+      const gDown = DOWN_SPAN;                                // gauge eases down across the panel sweep
+
+      // A fresh / newly formatted card has no identity yet. Rather than fading
+      // out, the deck HOLDS at full brightness with the needle parked at redline
+      // while the name + colour picker is up — the interface visibly waiting.
+      // releaseIgnition() (called on save) then ends the sequence.
+      const awaitSetup = !!(LAST && LAST.card_present && LAST.card_unnamed);
+
+      // ── Phase 1: cascade every panel ON and LEAVE it lit ──
+      panels.forEach((p, i) => {
+        setTimeout(() => {
+          const isStage = p.classList.contains('stage');
+          p.classList.add(isStage ? 'channel-test' : 'surge');
+          if (isStage) {
+            const dot = p.querySelector('.st-dot'), m = p.querySelector('.st-main');
+            if (dot) dot.classList.add('fire');
+            if (m) m.classList.add('flare');
+          }
+          // when the CARD panel lights: run the gauge — fade up to redline, hold,
+          // then fade down to the real fill (durations locked to the deck timeline).
+          if (i === cardIndex) {
+            if (awaitSetup) gaugeUp(gUp);                     // park at redline, wait
+            else igniteGauge(targetPct, gUp, HOLD, gDown);
+            countUp(fillEl, targetPct);
+          }
+        }, upAt(i));
+      });
+
+      // Ornament fades UP with the deck lighting on, DOWN with the panel sweep.
+      if (ornament) setTimeout(() => ornament.classList.add('lit'), START);
+      if (ornament && !awaitSetup) setTimeout(() => ornament.classList.remove('lit'), fadeStart);
+
+      // Verdict headline flare, timed with the verdict panel lighting
+      setTimeout(() => { if (vt) { vt.classList.add('flare'); setTimeout(() => vt.classList.remove('flare'), 1300); } }, START + 40);
+
+      // Right → left fade order, by on-screen position.
+      const sweep = panels
+        .map(p => { const r = p.getBoundingClientRect(); return { p, x: r.left + r.width / 2 }; })
+        .sort((a, b) => b.x - a.x)
+        .map(o => o.p);
+
+      const settle = () => {
+        body.classList.remove('igniting', 'deck-lit');
+        body.classList.add('ignited');
+        igniting = false;
+        ignited = true;
+        if (LAST) {
+          renderCard(LAST);
+          applyVerdict(LAST.card_present ? LAST.verdict : 'no_card');
+          styleBackup(LAST.last_backup, LAST.last_backup_rel);
+          renderPipeline(LAST);
+          renderSessions(LAST.ledger || LAST.sessions);
+        }
+      };
+
+      // ── Phase 2a: HOLD (fresh card) ──
+      // Stay lit and hand control back so the name/colour picker is interactive.
+      // .deck-lit keeps the ignition easing alive for the eventual fade.
+      if (awaitSetup) {
+        releaseIgnition = () => {
+          releaseIgnition = null;
+          sweep.forEach((p, i) => setTimeout(() => clearLit(p), DOWN_SPAN * decel(norm(i))));
+          if (ornament) ornament.classList.remove('lit');
+          gaugeDown(LAST && LAST.card_present ? (+LAST.fill_pct || 0) : 0, gDown);
+          setTimeout(settle, DOWN_SPAN + 1500);
+        };
+        setTimeout(() => {
+          body.classList.remove('igniting');
+          body.classList.add('ignited', 'deck-lit');
+          igniting = false;
+          ignited = true;
+          if (LAST) { renderCard(LAST); renderPipeline(LAST); }   // make the picker live
+        }, allLitAt + 80);
+        return;
+      }
+
+      // ── Phase 2b: normal fade-down, right → left, in step with the gauge ──
+      sweep.forEach((p, i) => setTimeout(() => clearLit(p), fadeStart + DOWN_SPAN * decel(norm(i))));
+      setTimeout(settle, fadeStart + DOWN_SPAN + 1500);
+    }
+
+    function renderState(d) {
+      LAST = d;
+      lastSig = sig(d);
+      // The interface wears the inserted card's colour; swapping cards crossfades.
+      // While naming, the live swatch preview wins over the (still unset) state.
+      if (!pendingColor) applyAccent(d.card_present ? (d.card_color || DEFAULT_ACCENT) : DEFAULT_ACCENT);
+      if (igniting) { return; } // ignition smoothly owns visual interpolation until completion
+      renderCard(d);
+      applyVerdict(d.card_present ? d.verdict : 'no_card');
+      styleBackup(d.last_backup, d.last_backup_rel);
+      renderPipeline(d);
+      renderSessions(d.ledger || d.sessions);
+      const vb = document.getElementById('vault-btn');
+      if (vb) {
+        vb.classList.toggle('unset', !d.vault_set);
+        vb.title = d.vault_root ? ('Vault: ' + d.vault_root) : 'No vault set — click to choose where keepers are archived.';
+      }
+    }
+
+    async function fetchState() {
+      try {
+        const r = await fetch('/api/state', { cache: 'no-store' });
+        if (!r.ok) throw 0;
+        const d = await r.json();
+        goLive(d.version);
+
+        const cardJustIn = ignited && LAST && !LAST.card_present && d.card_present;
+        if (!cardJustIn && sig(d) === lastSig) {
+          styleBackup(d.last_backup, d.last_backup_rel);
+          return;
+        }
+        renderState(d);
+        if (cardJustIn) ignite();
+      } catch (e) {}
+    }
+
+    function goLive(ver) {
+      if (!LIVE) {
+        LIVE = true;
+        document.getElementById('conn').className = 'conn live';
+        document.getElementById('conn-text').textContent = 'LIVE';
+        document.getElementById('sim-strip').classList.add('hidden');
+      }
+      if (ver) document.getElementById('ver').textContent = 'v' + ver;
+    }
+
+    async function resetData() {
+      if (!LIVE) { toast('Reset needs the live bridge (ingest ui)'); return; }
+      if (!confirm('Reset all INGEST tracking data?\n\nClears every session, backup record, card watermark and the verdict — a clean slate.\n\nYour photos (on cards and in your vault) are NOT touched.')) return;
+      const b = document.getElementById('reset-btn');
+      b.disabled = true; b.textContent = '⟲ …';
+      await runStageRaw('reset');
+      b.disabled = false; b.textContent = '⟲ RESET';
+    }
+
+    async function runStageRaw(action) {
+      try {
+        const r = await fetch('/api/action/' + action, { method: 'POST' });
+        const d = await r.json();
+        showConsole(d.output || '');
+        toast((d.success ? '✓ ' : '✗ ') + action + (d.success ? ' complete' : ''));
+        if (d.state) renderState(d.state);
+      } catch (e) { toast('failed'); }
+    }
+
+    let toastT;
+    function toast(m) {
+      const t = document.getElementById('toast');
+      t.textContent = m;
+      t.classList.add('show');
+      clearTimeout(toastT);
+      toastT = setTimeout(() => t.classList.remove('show'), 3200);
+    }
+
+    function showConsole(text) {
+      const c = document.getElementById('console'), tg = document.getElementById('console-toggle');
+      if (!text.trim()) { tg.style.display = 'none'; c.classList.remove('open'); return; }
+      c.textContent = text.trim(); tg.style.display = 'block';
+    }
+
+    function toggleConsole() {
+      const c = document.getElementById('console'), tg = document.getElementById('console-toggle');
+      c.classList.toggle('open');
+      tg.textContent = (c.classList.contains('open') ? '▾ hide output' : '▸ show last output');
+    }
+
+    // ── DEMO MODES (FOR SIMULATION & TESTING) ──
+    function ses(date, id, frames, jpgs, backed, keepers, status) {
+      return { date, id, frames, raws: frames, jpgs, backed, keepers, status };
+    }
+
+    function demo(which) {
+      document.querySelectorAll('.sim-btn').forEach(b => b.classList.remove('active'));
+      if (window.event && event.target) event.target.classList.add('active');
+      const wasNoCard = LAST && !LAST.card_present;
+      const D = {
+        nocard: { card_present: false, verdict: 'no_card', last_backup: 'No backups yet', sessions: [] },
+        fresh: { card_present: true, card_unnamed: false, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'idle', last_backup: 'No backups yet', sessions: [] },
+        pulled: {
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet',
+          sessions: [ses('AUG 24', 'SES-019', 56, 56, 0, 56, 'PENDING')]
+        },
+        partial: {
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet',
+          sessions: [ses('AUG 24', 'SES-019', 56, 52, 0, 56, 'PENDING')]
+        },
+        backed: {
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'backed',
+          last_backup: new Date(Date.now() - 6 * 3600e3).toISOString(), last_backup_rel: '6h ago',
+          sessions: [ses('AUG 24', 'SES-019', 56, 56, 18, 18, 'PENDING')]
+        },
+        safe: {
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'safe',
+          last_backup: new Date(Date.now() - 6 * 3600e3).toISOString(), last_backup_rel: '6h ago',
+          sessions: [ses('AUG 24', 'SES-019', 56, 56, 18, 18, 'VERIFIED'), ses('AUG 20', 'SES-018', 42, 42, 14, 14, 'VERIFIED')]
+        },
+      }[which];
+
+      renderState(D);
+      // Re-ignite when card transitions from nocard to present
+      if (wasNoCard && D.card_present) {
+        ignite();
+      }
+    }
+
+    async function init() {
+      // ONE content load: fetch the real state first (so ignition reveals the
+      // true dashboard, not a demo that then gets replaced — no double-load).
+      try {
+        const r = await fetch('/api/state', { cache: 'no-store' });
+        if (r.ok) { const d = await r.json(); goLive(d.version); LAST = d; lastSig = sig(d); }
+      } catch (e) {}
+      if (!LAST) {   // offline preview fallback
+        LAST = { card_present: true, card_unnamed: false, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'idle', last_backup: 'No backups yet', card_color: 'cyanotype', sessions: [] };
+        lastSig = sig(LAST);
+      }
+      // Wear the card's colour BEFORE the reveal so ignition fires in it.
+      applyAccent(LAST.card_present ? (LAST.card_color || DEFAULT_ACCENT) : DEFAULT_ACCENT, false);
+      ignite();             // single reveal: paints real content, then lights it panel-by-panel
+      setInterval(fetchState, 4000);
+    }
+    init();
+  </script>
+</body>
+</html>
