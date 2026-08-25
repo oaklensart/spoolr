@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-INGEST — Python UI Bridge Server
+SPOOLR — Python UI Bridge Server
 Zero external dependencies (Python 3 standard library only).
 
 Serves the Bento dashboard and exposes a small, read-mostly REST surface backed
-by the real ledgers in ~/.config/ingest. Binds to loopback only and rejects
+by the real ledgers in ~/.config/spoolr. Binds to loopback only and rejects
 cross-origin POSTs so a random web page can't drive your CLI.
 """
 
@@ -21,37 +21,37 @@ import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
 
-PORT = int(os.environ.get("INGEST_UI_PORT", "7331"))
+PORT = int(os.environ.get("SPOOLR_UI_PORT", "7331"))
 SERVER_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SERVER_DIR.parent
 
 # Web dir works for both the repo layout (server/ ‹sibling› web/) and the
-# installed layout (~/.config/ingest/server + ~/.config/ingest/web).
+# installed layout (~/.config/spoolr/server + ~/.config/spoolr/web).
 WEB_DIR = REPO_ROOT / "web"
 
-CONFIG_DIR = Path(os.environ.get("INGEST_CONFIG_DIR", Path.home() / ".config" / "ingest"))
+CONFIG_DIR = Path(os.environ.get("SPOOLR_CONFIG_DIR", Path.home() / ".config" / "spoolr"))
 
-# Per-card accent colours. Must stay in step with CARD_PALETTE in bin/ingest and
+# Per-card accent colours. Must stay in step with CARD_PALETTE in bin/spoolr and
 # the PALETTE table in web/dashboard.html.
 CARD_PALETTE = ("cyanotype", "anthotype", "aerochrome", "chlorophyll", "platinum")
-MANIFEST_NAME = ".ingest_manifest.tsv"   # must match $MANIFEST_NAME in bin/ingest
+MANIFEST_NAME = ".spoolr_manifest.tsv"   # must match $MANIFEST_NAME in bin/spoolr
 
 
-def resolve_ingest_bin():
-    """Find the ingest executable robustly. Env wins, then PATH, then layout."""
-    env_bin = os.environ.get("INGEST_BIN")
+def resolve_spoolr_bin():
+    """Find the spoolr executable robustly. Env wins, then PATH, then layout."""
+    env_bin = os.environ.get("SPOOLR_BIN")
     if env_bin and Path(env_bin).exists():
         return env_bin
-    on_path = shutil.which("ingest")
+    on_path = shutil.which("spoolr")
     if on_path:
         return on_path
-    for cand in (REPO_ROOT / "bin" / "ingest", SERVER_DIR / "ingest"):
+    for cand in (REPO_ROOT / "bin" / "spoolr", SERVER_DIR / "spoolr"):
         if cand.exists():
             return str(cand)
     return None
 
 
-BIN_INGEST = resolve_ingest_bin()
+BIN_SPOOLR = resolve_spoolr_bin()
 
 
 def parse_tsv(file_path):
@@ -87,12 +87,12 @@ def session_scan(staging_path):
 
 
 def _run_json(args, default):
-    if BIN_INGEST is None:
+    if BIN_SPOOLR is None:
         return default
     try:
         r = subprocess.run(
-            [str(BIN_INGEST), *args], capture_output=True, text=True, timeout=20,
-            stdin=subprocess.DEVNULL, env=dict(os.environ, INGEST_CONFIG_DIR=str(CONFIG_DIR)),
+            [str(BIN_SPOOLR), *args], capture_output=True, text=True, timeout=20,
+            stdin=subprocess.DEVNULL, env=dict(os.environ, SPOOLR_CONFIG_DIR=str(CONFIG_DIR)),
         )
         return json.loads((r.stdout or "").strip() or "null") or default
     except Exception:
@@ -100,12 +100,12 @@ def _run_json(args, default):
 
 
 def probe_card():
-    """Live, side-effect-free card status via `ingest probe`. {} if unavailable."""
+    """Live, side-effect-free card status via `spoolr probe`. {} if unavailable."""
     return _run_json(["probe"], {})
 
 
 def list_volumes():
-    """Attached candidate vault drives via `ingest volumes`. [] if unavailable."""
+    """Attached candidate vault drives via `spoolr volumes`. [] if unavailable."""
     return _run_json(["volumes"], [])
 
 
@@ -164,7 +164,7 @@ def tagged_field(cols, key):
 
 
 def restore_source(session_id, staging_path, backed_at):
-    """Where `ingest restore` would get this session's frame list.
+    """Where `spoolr restore` would get this session's frame list.
 
     Mirrors restore_wanted() in the CLI, and must keep mirroring it: the two
     records die in different disasters. The manifest lives inside the staging
@@ -327,7 +327,7 @@ def get_full_state():
     return state
 
 
-class IngestHandler(http.server.SimpleHTTPRequestHandler):
+class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(WEB_DIR), **kwargs)
 
@@ -376,9 +376,9 @@ class IngestHandler(http.server.SimpleHTTPRequestHandler):
         if not self._same_origin():
             self._json(403, {"error": "cross-origin request refused"})
             return
-        if BIN_INGEST is None:
+        if BIN_SPOOLR is None:
             self._json(200, {"success": False,
-                             "output": "ingest executable not found on PATH.",
+                             "output": "spoolr executable not found on PATH.",
                              "state": get_full_state()})
             return
 
@@ -387,8 +387,8 @@ class IngestHandler(http.server.SimpleHTTPRequestHandler):
             "status": ["status"],
             "reconcile": ["reconcile"],
             "peel": ["peel"],
-            "pull": ["ingest"],
-            "pull_fast": ["ingest", "--fast"],
+            "pull": ["spoolr"],
+            "pull_fast": ["spoolr", "--fast"],
             "backup": ["backup"],
             "eject": ["eject"],
             "reveal": ["reveal"],
@@ -480,14 +480,14 @@ class IngestHandler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {"error": "invalid action"})
             return
 
-        env = dict(os.environ, INGEST_CONFIG_DIR=str(CONFIG_DIR))
+        env = dict(os.environ, SPOOLR_CONFIG_DIR=str(CONFIG_DIR))
         try:
             # Deliberately NOT text=True: universal-newline decoding rewrites
             # every lone \r to \n, which would turn each progress redraw into
             # its own line and leave strip_ansi's \r collapsing with nothing to
             # collapse. Decode ourselves so the carriage returns survive to it.
             result = subprocess.run(
-                [str(BIN_INGEST), *argv],
+                [str(BIN_SPOOLR), *argv],
                 capture_output=True, timeout=600, check=False,
                 stdin=subprocess.DEVNULL, env=env,
             )
@@ -520,15 +520,15 @@ def run():
         sys.exit(1)
     socketserver.TCPServer.allow_reuse_address = True
     try:
-        httpd = socketserver.TCPServer(("127.0.0.1", PORT), IngestHandler)
+        httpd = socketserver.TCPServer(("127.0.0.1", PORT), SpoolrHandler)
     except OSError as exc:
         print(f"  ✗ Could not bind to localhost:{PORT} — {exc}", file=sys.stderr)
-        print(f"    Another instance running? Try: INGEST_UI_PORT=7332 ingest ui", file=sys.stderr)
+        print(f"    Another instance running? Try: SPOOLR_UI_PORT=7332 spoolr ui", file=sys.stderr)
         sys.exit(1)
     with httpd:
         url = f"http://localhost:{PORT}"
-        print(f"\n  ⚡ INGEST Bento Dashboard active at {url}")
-        print(f"     ingest binary : {BIN_INGEST or 'NOT FOUND'}")
+        print(f"\n  ⚡ SPOOLR Bento Dashboard active at {url}")
+        print(f"     spoolr binary : {BIN_SPOOLR or 'NOT FOUND'}")
         print(f"     config dir    : {CONFIG_DIR}")
         print("  Press Ctrl+C to stop.\n")
         try:

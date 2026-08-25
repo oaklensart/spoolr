@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# INGEST — Installer
+# SPOOLR — Installer
 # Local:   ./install.sh
-# Remote:  curl -fsSL https://raw.githubusercontent.com/oaklens/ingest/main/install.sh | bash
+# Remote:  curl -fsSL https://raw.githubusercontent.com/oaklensart/spoolr/main/install.sh | bash
 # ==============================================================================
 set -euo pipefail
 
@@ -10,22 +10,22 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
 CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 echo ""
-echo -e "${BOLD}⚡ INGEST INSTALLER${NC} — Card Memory & Archival Engine"
+echo -e "${BOLD}⚡ SPOOLR INSTALLER${NC} — Card Memory & Archival Engine"
 echo ""
 
 # ── Locate sources (local checkout, or download a tarball if piped via curl) ──
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
 SRC_ROOT="$SCRIPT_DIR"
 
-if [ -z "$SRC_ROOT" ] || [ ! -f "$SRC_ROOT/bin/ingest" ]; then
+if [ -z "$SRC_ROOT" ] || [ ! -f "$SRC_ROOT/bin/spoolr" ]; then
   TMP_DIR=$(mktemp -d)
   trap 'rm -rf "$TMP_DIR"' EXIT
   echo -e "  ${CYAN}Downloading latest release...${NC}"
-  curl -fsSL "https://github.com/oaklens/ingest/archive/refs/heads/main.tar.gz" | tar -xz -C "$TMP_DIR"
-  SRC_ROOT="$TMP_DIR/ingest-main"
+  curl -fsSL "https://github.com/oaklensart/spoolr/archive/refs/heads/main.tar.gz" | tar -xz -C "$TMP_DIR"
+  SRC_ROOT="$TMP_DIR/spoolr-main"
 fi
 
-BIN_SOURCE="$SRC_ROOT/bin/ingest"
+BIN_SOURCE="$SRC_ROOT/bin/spoolr"
 WEB_SOURCE="$SRC_ROOT/web/dashboard.html"
 SERVER_SOURCE="$SRC_ROOT/server/bridge.py"
 
@@ -40,16 +40,16 @@ if [ ! -w "$INSTALL_DIR" ]; then
   INSTALL_DIR="$HOME/.local/bin"
 fi
 
-# ── Durable config + UI assets (honors an INGEST_CONFIG_DIR override) ──
-CFG_DIR="${INGEST_CONFIG_DIR:-$HOME/.config/ingest}"
+# ── Durable config + UI assets (honors an SPOOLR_CONFIG_DIR override) ──
+CFG_DIR="${SPOOLR_CONFIG_DIR:-$HOME/.config/spoolr}"
 mkdir -p "$CFG_DIR/watermarks" "$CFG_DIR/server" "$CFG_DIR/web"
 touch "$CFG_DIR/cards.tsv" "$CFG_DIR/ledger.tsv" "$CFG_DIR/backups.tsv"
 
-install -m 0755 "$BIN_SOURCE" "$INSTALL_DIR/ingest"
+install -m 0755 "$BIN_SOURCE" "$INSTALL_DIR/spoolr"
 install -m 0644 "$WEB_SOURCE" "$CFG_DIR/web/dashboard.html"
 install -m 0644 "$SERVER_SOURCE" "$CFG_DIR/server/bridge.py"
 
-echo -e "  ${GREEN}✓${NC} Executable installed to ${BOLD}$INSTALL_DIR/ingest${NC}"
+echo -e "  ${GREEN}✓${NC} Executable installed to ${BOLD}$INSTALL_DIR/spoolr${NC}"
 echo -e "  ${GREEN}✓${NC} Dashboard + bridge installed under ${BOLD}$CFG_DIR${NC}"
 echo -e "  ${GREEN}✓${NC} Config and ledgers initialized"
 
@@ -62,9 +62,9 @@ esac
 
 echo ""
 echo -e "  ${BOLD}Getting started:${NC}"
-echo -e "    1. Check your environment:  ${CYAN}ingest doctor${NC}"
-echo -e "    2. Insert your SD card and: ${CYAN}ingest${NC}"
-echo -e "    3. Launch the dashboard:    ${CYAN}ingest ui${NC}"
+echo -e "    1. Check your environment:  ${CYAN}spoolr doctor${NC}"
+echo -e "    2. Insert your SD card and: ${CYAN}spoolr${NC}"
+echo -e "    3. Launch the dashboard:    ${CYAN}spoolr ui${NC}"
 echo ""
 echo -e "  ${YELLOW}Recommended:${NC} install exiftool for reliable previews & shoot dates:"
 echo -e "      brew install exiftool"

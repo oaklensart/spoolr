@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# INGEST — integration tests
+# SPOOLR — integration tests
 # Drives the real CLI end-to-end against a throwaway fake card + vault, then runs
 # adversarial scenarios that must each be caught. The whole promise of this tool
 # is that "SAFE TO FORMAT" is never printed when it isn't true — these tests are
 # the guardrail on that promise.
 #
-#   bash test/test_ingest.sh
+#   bash test/test_spoolr.sh
 # ==============================================================================
 set -uo pipefail
 
-ING="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/ingest"
+ING="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/bin/spoolr"
 ROOT="$(mktemp -d)"
-export INGEST_CONFIG_DIR="$ROOT/config"
-export INGEST_CARD_GLOB="$ROOT/volumes/*"
+export SPOOLR_CONFIG_DIR="$ROOT/config"
+export SPOOLR_CARD_GLOB="$ROOT/volumes/*"
 STAGING="$ROOT/staging"; export HOME="$ROOT/home"   # isolate default staging
-mkdir -p "$HOME/Pictures/Ingest"
+mkdir -p "$HOME/Pictures/Spoolr"
 
 CARD="$ROOT/volumes/ALPHA"; VAULT="$ROOT/vault"
 mkdir -p "$CARD/DCIM/100_TEST" "$VAULT"
@@ -28,17 +28,17 @@ mk P1000001.RW2 20000; mk P1000002.RAF 21000; mk P1000003.ORF 22000; mk P1000004
 pass=0; fail=0
 say(){ printf '\n== %s ==\n' "$1"; }
 ck(){ if eval "$2"; then echo "  PASS: $1"; pass=$((pass+1)); else echo "  FAIL: $1"; fail=$((fail+1)); fi; }
-sess(){ ls -dt "$HOME/Pictures/Ingest"/*_SES-* 2>/dev/null | head -1; }
+sess(){ ls -dt "$HOME/Pictures/Spoolr"/*_SES-* 2>/dev/null | head -1; }
 
 say "offload stages ALL formats (incl RAF/ORF/CR2)"
 "$ING" --today >/dev/null 2>&1
 SD="$(sess)"
-ck "manifest lists 4 frames" '[ "$(grep -c . "$SD/.ingest_manifest.tsv")" = 4 ]'
-ck "RAF/ORF/CR2 present in manifest" 'grep -q RAF "$SD/.ingest_manifest.tsv" && grep -q ORF "$SD/.ingest_manifest.tsv" && grep -q CR2 "$SD/.ingest_manifest.tsv"'
+ck "manifest lists 4 frames" '[ "$(grep -c . "$SD/.spoolr_manifest.tsv")" = 4 ]'
+ck "RAF/ORF/CR2 present in manifest" 'grep -q RAF "$SD/.spoolr_manifest.tsv" && grep -q ORF "$SD/.spoolr_manifest.tsv" && grep -q CR2 "$SD/.spoolr_manifest.tsv"'
 
 say "backup is read-back verified"
 "$ING" backup "$VAULT" >/dev/null 2>&1
-ck "4 frames indexed" '[ "$(grep -c . "$INGEST_CONFIG_DIR/backups.tsv")" = 4 ]'
+ck "4 frames indexed" '[ "$(grep -c . "$SPOOLR_CONFIG_DIR/backups.tsv")" = 4 ]'
 
 say "reconcile with card present → SAFE (exit 0)"
 "$ING" reconcile >/dev/null 2>&1; ck "exit 0" '[ "$?" = 0 ]'
@@ -49,15 +49,15 @@ mv "$CARD" "$ROOT/ejected"    # simulate ejected card
 mv "$ROOT/ejected" "$CARD"
 
 say "ADVERSARIAL: corrupt a vault copy → NOT SAFE"
-VF="$(awk -F'\t' 'NR==1{print $4}' "$INGEST_CONFIG_DIR/backups.tsv")"; echo x >> "$VF"
+VF="$(awk -F'\t' 'NR==1{print $4}' "$SPOOLR_CONFIG_DIR/backups.tsv")"; echo x >> "$VF"
 OUT="$("$ING" reconcile 2>&1)"; rc=$?
 ck "blocked (exit 1)" '[ "$rc" = 1 ]'; ck "verdict names NOT SAFE" 'echo "$OUT" | grep -q "NOT SAFE"'
 cp "$SD/$(basename "$VF")" "$VF"   # restore
 
 say "ADVERSARIAL: a keeper missing from the vault → NOT SAFE"
-DF="$(awk -F'\t' 'NR==2{print $4}' "$INGEST_CONFIG_DIR/backups.tsv")"
-DN="$(awk -F'\t' 'NR==2{print $2}' "$INGEST_CONFIG_DIR/backups.tsv")"
-rm -f "$DF"; grep -v "	$DN	" "$INGEST_CONFIG_DIR/backups.tsv" > "$INGEST_CONFIG_DIR/backups.tsv.t" && mv "$INGEST_CONFIG_DIR/backups.tsv.t" "$INGEST_CONFIG_DIR/backups.tsv"
+DF="$(awk -F'\t' 'NR==2{print $4}' "$SPOOLR_CONFIG_DIR/backups.tsv")"
+DN="$(awk -F'\t' 'NR==2{print $2}' "$SPOOLR_CONFIG_DIR/backups.tsv")"
+rm -f "$DF"; grep -v "	$DN	" "$SPOOLR_CONFIG_DIR/backups.tsv" > "$SPOOLR_CONFIG_DIR/backups.tsv.t" && mv "$SPOOLR_CONFIG_DIR/backups.tsv.t" "$SPOOLR_CONFIG_DIR/backups.tsv"
 OUT="$("$ING" reconcile 2>&1)"; rc=$?
 ck "blocked and named 'not in vault'" '[ "$rc" = 1 ] && echo "$OUT" | grep -q "not in vault"'
 
@@ -73,7 +73,7 @@ say "volumes lists drives as JSON; set-vault persists the vault"
 OUT="$("$ING" volumes 2>/dev/null)"
 ck "volumes emits a JSON array" 'printf "%s" "$OUT" | python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" 2>/dev/null'
 "$ING" set-vault "$ROOT/thevault" >/dev/null 2>&1
-ck "set-vault saved to config" 'grep -q "thevault" "$INGEST_CONFIG_DIR/config.conf"'
+ck "set-vault saved to config" 'grep -q "thevault" "$SPOOLR_CONFIG_DIR/config.conf"'
 ck "probe reflects the new vault" '"$ING" probe 2>/dev/null | grep -q "thevault"'
 
 say "probe emits valid JSON with live card fields"
@@ -91,19 +91,19 @@ NC2="$ROOT/volumes/FASTCARD"; mkdir -p "$NC2/DCIM/1"; echo FASTCARD > "$NC2/.car
 mv "$CARD" "$ROOT/parked"
 head -c 20000 /dev/urandom > "$NC2/DCIM/1/F1.RW2"
 "$ING" --fast --baseline=all >/dev/null 2>&1
-FS=$(ls -dt "$HOME/Pictures/Ingest"/*_SES-* | head -1)
-ck "fast pull staged the frame with a manifest hash" '[ -n "$(awk -F"\t" "NR==1&&\$3!=\"\"{print 1}" "$FS/.ingest_manifest.tsv" 2>/dev/null)" ]'
+FS=$(ls -dt "$HOME/Pictures/Spoolr"/*_SES-* | head -1)
+ck "fast pull staged the frame with a manifest hash" '[ -n "$(awk -F"\t" "NR==1&&\$3!=\"\"{print 1}" "$FS/.spoolr_manifest.tsv" 2>/dev/null)" ]'
 rm -rf "$NC2" "$FS"; mv "$ROOT/parked" "$CARD"
 
 say "session ids never collide, even past a foreign ledger row"
 # `reset` preserves rows this tool did not write. One landing last used to make
 # the next id restart at SES-001 — and a duplicate id would hand a restore the
 # wrong session's frames out of backups.tsv.
-printf '2019-01-01\tForeign\t2019-01-01\t4 frames\n' >> "$INGEST_CONFIG_DIR/ledger.tsv"
+printf '2019-01-01\tForeign\t2019-01-01\t4 frames\n' >> "$SPOOLR_CONFIG_DIR/ledger.tsv"
 head -c 7000 /dev/urandom > "$CARD/DCIM/100_TEST/COLLIDE.RW2"
 "$ING" >/dev/null 2>&1
-ck "every SES id is unique" '[ "$(cut -f2 "$INGEST_CONFIG_DIR/ledger.tsv" | grep "^SES-" | sort | uniq -d | wc -l | tr -d " ")" = 0 ]'
-ck "foreign row still preserved" 'grep -q Foreign "$INGEST_CONFIG_DIR/ledger.tsv"'
+ck "every SES id is unique" '[ "$(cut -f2 "$SPOOLR_CONFIG_DIR/ledger.tsv" | grep "^SES-" | sort | uniq -d | wc -l | tr -d " ")" = 0 ]'
+ck "foreign row still preserved" 'grep -q Foreign "$SPOOLR_CONFIG_DIR/ledger.tsv"'
 
 # ── RESTORE ───────────────────────────────────────────────────────────────
 # The recovery case: the drive holding the originals is gone, but the card was
@@ -115,12 +115,12 @@ RC="$ROOT/volumes/RECOV"; mkdir -p "$RC/DCIM/101_R"; echo RECOV > "$RC/.card_id"
 for n in 1 2 3; do head -c $((10000 + n)) /dev/urandom > "$RC/DCIM/101_R/R00000$n.RW2"; done
 "$ING" --baseline=all >/dev/null 2>&1
 RS="$(sess)"
-RSID="$(awk -F'\t' -v d="$RS" '$6==d{print $2}' "$INGEST_CONFIG_DIR/ledger.tsv" | tail -1)"
+RSID="$(awk -F'\t' -v d="$RS" '$6==d{print $2}' "$SPOOLR_CONFIG_DIR/ledger.tsv" | tail -1)"
 "$ING" backup "$ROOT/rvault" >/dev/null 2>&1
-WM="$INGEST_CONFIG_DIR/watermarks/RECOV.watermark"
+WM="$SPOOLR_CONFIG_DIR/watermarks/RECOV.watermark"
 WM_BEFORE="$(stat -f%m "$WM" 2>/dev/null || echo none)"
 rm -rf "$RS" "$ROOT/rvault"                      # the disaster: staging AND vault gone
-ck "backup index survived the disaster" '[ "$(grep -c "^$RSID	" "$INGEST_CONFIG_DIR/backups.tsv")" = 3 ]'
+ck "backup index survived the disaster" '[ "$(grep -c "^$RSID	" "$SPOOLR_CONFIG_DIR/backups.tsv")" = 3 ]'
 
 OUT="$("$ING" restore "$RSID" "$ROOT/newdrive" 2>&1)"
 NEWDIR="$(ls -d "$ROOT/newdrive"/*_SES-*_restored-from-* 2>/dev/null | head -1)"
@@ -130,7 +130,7 @@ ck "all 3 keepers restored" '[ "$(ls "$NEWDIR"/*.RW2 2>/dev/null | wc -l | tr -d
 ck "restored bytes are identical to the card originals" 'cmp -s "$NEWDIR/R000001.RW2" "$RC/DCIM/101_R/R000001.RW2" && cmp -s "$NEWDIR/R000003.RW2" "$RC/DCIM/101_R/R000003.RW2"'
 ck "watermark NOT advanced by a restore" '[ "$WM_BEFORE" = "$(stat -f%m "$WM" 2>/dev/null || echo none)" ]'
 
-RROW="$(awk -F'\t' -v d="$NEWDIR" '$6==d{print $0}' "$INGEST_CONFIG_DIR/ledger.tsv" | tail -1)"
+RROW="$(awk -F'\t' -v d="$NEWDIR" '$6==d{print $0}' "$SPOOLR_CONFIG_DIR/ledger.tsv" | tail -1)"
 ck "ledger row is RESTORED, never VERIFIED" '[ "$(printf "%s" "$RROW" | cut -f7)" = RESTORED ]'
 ck "ledger row references the session it recovered" '[ "$(printf "%s" "$RROW" | cut -f8)" = "restored_from=$RSID" ]'
 ck "restore took a NEW session id" '[ "$(printf "%s" "$RROW" | cut -f2)" != "$RSID" ]'
@@ -153,12 +153,12 @@ say "RESTORE: --dry-run reports and copies nothing"
 OUT="$("$ING" restore "$RSID" "$ROOT/nd4" --dry-run 2>&1)"
 ck "says it is a dry run" 'echo "$OUT" | grep -q "Dry run"'
 ck "wrote no folder" '[ ! -d "$ROOT/nd4" ]'
-ck "wrote no ledger row" '[ "$(grep -c "nd4" "$INGEST_CONFIG_DIR/ledger.tsv")" = 0 ]'
+ck "wrote no ledger row" '[ "$(grep -c "nd4" "$SPOOLR_CONFIG_DIR/ledger.tsv")" = 0 ]'
 
 say "RESTORE: refuses when no per-file record survives"
 for n in 7 8; do head -c $((13000 + n)) /dev/urandom > "$RC/DCIM/101_R/R00000$n.RW2"; done
 "$ING" >/dev/null 2>&1                            # rolling pull, never backed up
-NS="$(sess)"; NSID="$(awk -F'\t' -v d="$NS" '$6==d{print $2}' "$INGEST_CONFIG_DIR/ledger.tsv" | tail -1)"
+NS="$(sess)"; NSID="$(awk -F'\t' -v d="$NS" '$6==d{print $2}' "$SPOOLR_CONFIG_DIR/ledger.tsv" | tail -1)"
 rm -rf "$NS"                                      # manifest dies with the folder
 OUT="$("$ING" restore "$NSID" "$ROOT/nd5" 2>&1)"; rc=$?
 ck "refuses (exit 1)" '[ "$rc" = 1 ]'
@@ -177,14 +177,14 @@ mv "$ROOT/parked3" "$RC"; rm -rf "$OC"
 rm -rf "$RC"; mv "$ROOT/parked2" "$CARD"          # hand the rig back to ALPHA
 
 say "reset clears tool data but preserves foreign config data"
-printf 'my cold storage index\n' > "$INGEST_CONFIG_DIR/coldstore.tsv"   # foreign file
-printf '2020-01-01\tAlpha\t2020-01-01\t9 frames\n' >> "$INGEST_CONFIG_DIR/ledger.tsv"  # foreign row
+printf 'my cold storage index\n' > "$SPOOLR_CONFIG_DIR/coldstore.tsv"   # foreign file
+printf '2020-01-01\tAlpha\t2020-01-01\t9 frames\n' >> "$SPOOLR_CONFIG_DIR/ledger.tsv"  # foreign row
 "$ING" reset --yes >/dev/null 2>&1
-ck "foreign coldstore.tsv preserved" '[ -s "$INGEST_CONFIG_DIR/coldstore.tsv" ]'
-ck "foreign (non-SES) ledger row preserved" 'grep -q Alpha "$INGEST_CONFIG_DIR/ledger.tsv"'
-ck "our SES- session rows cleared" '[ "$(grep -c "	SES-" "$INGEST_CONFIG_DIR/ledger.tsv")" = 0 ]'
-ck "backup index cleared" '[ ! -s "$INGEST_CONFIG_DIR/backups.tsv" ]'
-ck "reset kept staged photos on disk (no --purge)" '[ -n "$(find "$HOME/Pictures/Ingest" -iname "*.RW2" 2>/dev/null | head -1)" ]'
+ck "foreign coldstore.tsv preserved" '[ -s "$SPOOLR_CONFIG_DIR/coldstore.tsv" ]'
+ck "foreign (non-SES) ledger row preserved" 'grep -q Alpha "$SPOOLR_CONFIG_DIR/ledger.tsv"'
+ck "our SES- session rows cleared" '[ "$(grep -c "	SES-" "$SPOOLR_CONFIG_DIR/ledger.tsv")" = 0 ]'
+ck "backup index cleared" '[ ! -s "$SPOOLR_CONFIG_DIR/backups.tsv" ]'
+ck "reset kept staged photos on disk (no --purge)" '[ -n "$(find "$HOME/Pictures/Spoolr" -iname "*.RW2" 2>/dev/null | head -1)" ]'
 
 printf '\nRESULT: %d passed, %d failed\n' "$pass" "$fail"
 rm -rf "$ROOT"

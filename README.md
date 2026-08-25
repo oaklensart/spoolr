@@ -1,14 +1,14 @@
-# INGEST
+# SPOOLR
 
 > **Card memory, multi-session offload & local archival for photographers — with a verdict you can actually trust.**
 
-INGEST gives your physical SD cards a permanent identity, offloads each shoot into
+SPOOLR gives your physical SD cards a permanent identity, offloads each shoot into
 its own isolated session folder, archives your keepers to a local vault with
 **read-back SHA-256 verification**, and only ever tells you a card is **Safe to
 Format** when every keeper has been re-read and byte-matched in that vault.
 
 A moment never comes back. Neither should a frame — so when anything is uncertain,
-INGEST stops loudly and refuses to call a card safe.
+SPOOLR stops loudly and refuses to call a card safe.
 
 ---
 
@@ -16,22 +16,22 @@ INGEST stops loudly and refuses to call a card safe.
 
 This is the part that matters, so it's stated plainly:
 
-- **INGEST never deletes from your card.** Formatting is always your explicit action,
+- **SPOOLR never deletes from your card.** Formatting is always your explicit action,
   in-camera, after you've seen a green verdict.
 - **Backups are verified by reading them back.** After copying a keeper to your vault,
-  INGEST re-hashes the file *in the vault* and requires an exact SHA-256 match before
+  SPOOLR re-hashes the file *in the vault* and requires an exact SHA-256 match before
   recording it. A truncated or half-written copy is rejected, not trusted.
 - **The verdict re-reads at the moment of truth.** When you run `reconcile` with the
-  card inserted, INGEST hashes each keeper's **original on the card** and its **copy in
+  card inserted, SPOOLR hashes each keeper's **original on the card** and its **copy in
   the vault** and compares them right then — not a remembered value. If the card isn't
   inserted, it verifies against the staged copies and tells you so.
 - **Every RAW format is handled everywhere.** The recognised formats live in one list
   used by every stage, so a format can never be offloaded but skipped at verification.
   Supported: `RW2 ARW CR3 CR2 NEF DNG ORF RAF SRW PEF RWL IIQ 3FR GPR`.
 - **Read-only stays read-only.** `status` and `reconcile` never write to your card.
-  A card is only ever tagged during a deliberate `ingest` offload.
+  A card is only ever tagged during a deliberate `spoolr` offload.
 - **A card you never formatted is still a backup.** If the drive holding a session's
-  originals is lost, stolen or dies, `ingest restore` pulls that session's keepers
+  originals is lost, stolen or dies, `spoolr restore` pulls that session's keepers
   back off the card. It rebuilds the frame list from the session manifest, or — when
   that died with the drive — from `backups.tsv`, which lives on your Mac and survives
   losing both staging and vault. Every candidate is matched by SHA-256, never by
@@ -41,7 +41,7 @@ This is the part that matters, so it's stated plainly:
   `RESTORED`, never `VERIFIED`, so a recovered card cannot read as safe to format —
   the frames are back, but they are not yet in a vault.
 
-These guarantees are covered by `test/test_ingest.sh`, including adversarial cases
+These guarantees are covered by `test/test_spoolr.sh`, including adversarial cases
 (corrupted vault copy, missing keeper, filename collisions across sessions, and a
 camera that reused a filename between the original pull and the restore).
 
@@ -50,17 +50,17 @@ camera that reused a filename between the original pull and the restore).
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oaklens/ingest/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oaklensart/spoolr/main/install.sh | bash
 ```
 
 Then check your environment:
 
 ```bash
-ingest doctor
+spoolr doctor
 ```
 
 **Recommended:** `brew install exiftool` for reliable embedded-preview extraction and
-accurate shoot dates. INGEST works without it (falls back to `sips`), but exiftool is
+accurate shoot dates. SPOOLR works without it (falls back to `sips`), but exiftool is
 better.
 
 ---
@@ -69,15 +69,15 @@ better.
 
 ```bash
 # 1. Insert the card and offload everything new since your last pull
-ingest
+spoolr
 
 # 2. Open the session folder and color-tag your keeper JPEGs in Finder (Green/Purple)
 
 # 3. Archive the keepers to your vault drive (read-back verified)
-ingest backup
+spoolr backup
 
 # 4. Ask the question that matters
-ingest reconcile
+spoolr reconcile
 ```
 
 When you see:
@@ -94,28 +94,28 @@ every keeper is confirmed in your vault. Format the card in-camera with confiden
 
 | Command | Description |
 | :--- | :--- |
-| `ingest [slug]` | Rolling offload into a new session folder (`2026-08-24_SES-018_street`) |
-| `ingest --fast [slug]` | Offload without the copy-time card re-read (≈2× faster; reconcile is still the gate) |
-| `ingest --today [slug]` | Offload only today's frames without advancing the rolling watermark |
-| `ingest name <NAME>` | Set or rename the inserted card's permanent identity |
-| `ingest status` | Read-only fill gauge, frame headroom, and run history |
-| `ingest backup [path]` | Copy keepers to the vault with read-back SHA-256 verification |
-| `ingest reconcile [folder]` | Pre-wipe verdict (re-reads card + vault; card-wide by default) |
-| `ingest restore [SES-ID] [dir]` | Re-download a past session's keepers off the card when the originals are lost |
-| `ingest restore --dry-run` | Report what is still recoverable from the card; copy nothing |
-| `ingest peel [folder]` | Extract embedded JPEG previews for fast Finder color tagging |
-| `ingest eject` | Safely unmount the active card |
-| `ingest config` | Set staging and vault directories |
-| `ingest doctor` | Environment self-check (tools, paths, cards) |
-| `ingest reset [--all] [--purge-staging]` | Clear tracking data for a clean slate. Photos on cards/vault are never touched; `--purge-staging` also deletes staged folders, `--all` also clears saved paths. |
-| `ingest ui` | Launch the Bento dashboard on `localhost:7331` |
+| `spoolr [slug]` | Rolling offload into a new session folder (`2026-08-24_SES-018_street`) |
+| `spoolr --fast [slug]` | Offload without the copy-time card re-read (≈2× faster; reconcile is still the gate) |
+| `spoolr --today [slug]` | Offload only today's frames without advancing the rolling watermark |
+| `spoolr name <NAME>` | Set or rename the inserted card's permanent identity |
+| `spoolr status` | Read-only fill gauge, frame headroom, and run history |
+| `spoolr backup [path]` | Copy keepers to the vault with read-back SHA-256 verification |
+| `spoolr reconcile [folder]` | Pre-wipe verdict (re-reads card + vault; card-wide by default) |
+| `spoolr restore [SES-ID] [dir]` | Re-download a past session's keepers off the card when the originals are lost |
+| `spoolr restore --dry-run` | Report what is still recoverable from the card; copy nothing |
+| `spoolr peel [folder]` | Extract embedded JPEG previews for fast Finder color tagging |
+| `spoolr eject` | Safely unmount the active card |
+| `spoolr config` | Set staging and vault directories |
+| `spoolr doctor` | Environment self-check (tools, paths, cards) |
+| `spoolr reset [--all] [--purge-staging]` | Clear tracking data for a clean slate. Photos on cards/vault are never touched; `--purge-staging` also deletes staged folders, `--all` also clears saved paths. |
+| `spoolr ui` | Launch the Bento dashboard on `localhost:7331` |
 
 ---
 
 ## The Bento dashboard — the primary interface
 
 ```bash
-ingest ui
+spoolr ui
 ```
 
 The dashboard is built to run the **whole workflow from the browser** — the terminal is
@@ -138,7 +138,7 @@ refuses cross-origin requests.
 
 ---
 
-## Where your data lives (`~/.config/ingest/`)
+## Where your data lives (`~/.config/spoolr/`)
 
 Durable, and independent of any staging folder or card wipe:
 
@@ -147,13 +147,13 @@ Durable, and independent of any staging folder or card wipe:
   then any `key=value` fields — a restored session carries `restored_from=SES-NNN`).
 - `backups.tsv` — per-frame vault index: `session · filename · sha256 · vault_path · timestamp`.
 - `watermarks/<CARD_ID>.watermark` — per-card rolling watermark.
-- Each session folder also carries a `.ingest_manifest.tsv` (filename, size, sha256, source path).
+- Each session folder also carries a `.spoolr_manifest.tsv` (filename, size, sha256, source path).
 
 ### Advanced / testing overrides
 
-- `INGEST_CONFIG_DIR` — use a different config directory.
-- `INGEST_CARD_GLOB` — override the `/Volumes/*` card-detection root.
-- `INGEST_ASSUME_YES` — never prompt; fail loudly instead of blocking (for automation).
+- `SPOOLR_CONFIG_DIR` — use a different config directory.
+- `SPOOLR_CARD_GLOB` — override the `/Volumes/*` card-detection root.
+- `SPOOLR_ASSUME_YES` — never prompt; fail loudly instead of blocking (for automation).
 
 ---
 
@@ -165,7 +165,7 @@ Python 3 (built in) for the dashboard.
 ## Tests
 
 ```bash
-bash test/test_ingest.sh
+bash test/test_spoolr.sh
 ```
 
 ## License

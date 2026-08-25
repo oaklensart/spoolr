@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>INGEST — Bento Memory Deck</title>
+  <title>SPOOLR — Bento Memory Deck</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700;800&display=swap');
 
@@ -625,10 +625,10 @@
   </style>
 </head>
 <body class="t-neutral" id="body">
-  <h2 class="sr-only">INGEST dashboard: name your card, then run the offload → peel → tag → backup → reconcile pipeline; each stage lights up as it completes.</h2>
+  <h2 class="sr-only">SPOOLR dashboard: name your card, then run the offload → peel → tag → backup → reconcile pipeline; each stage lights up as it completes.</h2>
 
   <header>
-    <div class="brand"><div class="brand-dot"></div> INGEST</div>
+    <div class="brand"><div class="brand-dot"></div> SPOOLR</div>
     <div class="head-right">
       <span class="conn demo" id="conn"><span class="conn-dot"></span><span id="conn-text">DEMO</span></span>
       <button class="reset-btn" id="vault-btn" onclick="openVaultPicker(false)" title="Choose the drive/folder your keepers get archived to.">⚙ VAULT</button>
@@ -763,7 +763,7 @@
     // A card's colour rides on the card itself, so the ignition and the whole
     // interface light up in *that card's* colour. If the glow isn't the colour
     // you remember for this card, you're holding the wrong card — check before
-    // you format. Must stay in step with CARD_PALETTE in bin/ingest & bridge.py.
+    // you format. Must stay in step with CARD_PALETTE in bin/spoolr & bridge.py.
     const PALETTE = {
       cyanotype:   { hex: '#00e5ff', rgb: [0, 229, 255],   label: 'Cyanotype' },
       anthotype:   { hex: '#b026ff', rgb: [176, 38, 255],  label: 'Anthotype' },
@@ -1052,7 +1052,7 @@
       const P = [];
       // PULL
       if (!d.card_present && !s) P.push({ key: 'pull', name: 'Pull', cls: '', main: '—', metric: 'no card', act: null });
-      else if (!s) P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: 'Pull Ingest', metric: 'offload new frames', act: 'pull', fast: true });
+      else if (!s) P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: 'Pull Spoolr', metric: 'offload new frames', act: 'pull', fast: true });
       else P.push({ key: 'pull', name: 'Pull', cls: 'done', main: s.frames + ' RAWs', metric: 'offloaded', act: 'pull', fast: true });
       // PEEL
       if (!s) P.push({ key: 'peel', name: 'Peel', cls: '', main: '—', metric: 'previews', act: null });
@@ -1139,7 +1139,7 @@
     }
 
     async function openVaultPicker(thenBackup) {
-      if (!LIVE) { toast('Vault setup needs the live bridge (ingest ui)'); return; }
+      if (!LIVE) { toast('Vault setup needs the live bridge (spoolr ui)'); return; }
       let vols = [];
       try { vols = (await (await fetch('/api/volumes', { cache: 'no-store' })).json()).volumes || []; } catch (e) {}
       const cur = (LAST && LAST.vault_root) || '';
@@ -1200,7 +1200,7 @@
     }
 
     async function runStage(act, el) {
-      if (!LIVE) { toast('Runs need the live bridge (ingest ui)'); return; }
+      if (!LIVE) { toast('Runs need the live bridge (spoolr ui)'); return; }
       let action = act, body = null;
       if (act === 'pull') {
         if (LAST && LAST.card_first_run) { const bl = await chooseBaseline(); if (!bl) return; body = { baseline: bl }; }
@@ -1241,7 +1241,7 @@
       const root = document.getElementById('ses-grid'), cnt = document.getElementById('ledger-count');
       if (!list || !list.length) {
         cnt.textContent = '';
-        root.innerHTML = '<div class="empty">No sessions yet. Name your card, then Pull Ingest.</div>';
+        root.innerHTML = '<div class="empty">No sessions yet. Name your card, then Pull Spoolr.</div>';
         root.dataset.sig = '';
         return;
       }
@@ -1304,7 +1304,7 @@
     // is the only honest basis for offering the restore. We never copy first
     // and report after.
     async function openRecovery(s) {
-      if (!LIVE) { toast('Recovery needs the live bridge (ingest ui)'); return; }
+      if (!LIVE) { toast('Recovery needs the live bridge (spoolr ui)'); return; }
 
       const mounted = (LAST && LAST.card_present && LAST.card_name) || '';
       const wrongCard = mounted !== s.card;
@@ -1624,8 +1624,8 @@
     }
 
     async function resetData() {
-      if (!LIVE) { toast('Reset needs the live bridge (ingest ui)'); return; }
-      if (!confirm('Reset all INGEST tracking data?\n\nClears every session, backup record, card watermark and the verdict — a clean slate.\n\nYour photos (on cards and in your vault) are NOT touched.')) return;
+      if (!LIVE) { toast('Reset needs the live bridge (spoolr ui)'); return; }
+      if (!confirm('Reset all SPOOLR tracking data?\n\nClears every session, backup record, card watermark and the verdict — a clean slate.\n\nYour photos (on cards and in your vault) are NOT touched.')) return;
       const b = document.getElementById('reset-btn');
       b.disabled = true; b.textContent = '⟲ …';
       await runStageRaw('reset');
