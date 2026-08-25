@@ -46,6 +46,23 @@
       --brand-glow: rgba(var(--brand-rgb), 0.45);
       --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      /* ── Vertical rhythm ──
+         The deck is a fixed set of blocks, so what decides whether the whole
+         thing (ornament included) fits is viewport HEIGHT, not width — and 956px
+         is an ordinary laptop. These are scaled by the max-height queries near
+         the end of this sheet; nothing else should hardcode these distances. */
+      --deck-pad: 2rem;          /* main's top/bottom padding */
+      --deck-gap: 1.4rem;        /* gap between deck rows */
+      --box-pad: 1.8rem;         /* inside each panel */
+      --verdict-min: 210px;
+      --verdict-size: clamp(2.4rem, 4.6vw, 4rem);
+      --gauge-val: 3.6rem;       /* the big fill % on the camera card */
+      --orn-min: 220px;
+      --orn-mark: 164px;         /* the mark's own size — the real driver of the
+                                    ornament's height, not --orn-min */
+      --orn-gap: 0.95rem;
+      --orn-pad-t: 2.6rem;
+      --orn-pad-b: 1.6rem;
       --ease: cubic-bezier(0.16, 1, 0.3, 1);
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --r-lg: 24px;
@@ -111,6 +128,24 @@
     }
     .reset-btn:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-dim); }
     #vault-btn:hover { border-color: var(--brand); color: var(--brand); background: rgba(var(--brand-rgb), 0.08); }
+    .power-btn:hover { border-color: var(--warn); color: var(--warn); background: var(--warn-dim); }
+    /* After power off there is no server left to talk to, so the page says so
+       plainly instead of leaving a dead dashboard that still looks live. */
+    .powered-off {
+      position: fixed; inset: 0; z-index: 400; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 1rem; text-align: center;
+      /* Near-opaque on purpose: a powered-off dashboard must not look like a
+         live one behind a haze, or the stale numbers read as current. */
+      background: rgba(6, 6, 8, 0.985); backdrop-filter: blur(14px);
+      font-family: var(--font-mono); color: var(--text-dim); padding: 2rem;
+      opacity: 0; animation: in 0.45s var(--ease) forwards;
+    }
+    .powered-off .po-mark { font-size: 2.2rem; color: var(--text-muted); }
+    .powered-off h3 { font-family: var(--font-sans); font-size: 1.5rem; font-weight: 900; color: var(--text-main); letter-spacing: -0.02em; }
+    .powered-off code {
+      background: var(--bg-panel-2); border: 1px solid var(--border-dim); border-radius: 8px;
+      padding: 0.4rem 0.7rem; color: var(--brand); font-size: 0.8rem;
+    }
     #vault-btn.unset { border-color: var(--warn); color: var(--warn); }
     .modal .cur-vault {
       font-family: var(--font-mono); font-size: 0.68rem; color: var(--text-dim);
@@ -148,17 +183,17 @@
 
     /* ── MAIN & CARDS ── */
     main {
-      padding: 2rem 2.4rem; max-width: 1360px; width: 100%;
-      margin: 0 auto; flex: 1; display: flex; flex-direction: column; gap: 1.4rem;
+      padding: var(--deck-pad) 2.4rem; max-width: 1360px; width: 100%;
+      margin: 0 auto; flex: 1; display: flex; flex-direction: column; gap: var(--deck-gap);
     }
-    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 1.4rem; }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--deck-gap); }
 
     /* Base Card Box with Ambient Glow */
     .box {
       background: radial-gradient(circle at 50% -10%, var(--card-glow, rgba(var(--brand-rgb), 0.02)), transparent 75%), var(--bg-panel);
       border: 1px solid var(--card-border, var(--border-dim));
       border-radius: var(--r-lg);
-      padding: 1.8rem;
+      padding: var(--box-pad);
       position: relative;
       overflow: hidden;
       opacity: 0;
@@ -180,9 +215,9 @@
     }
 
     /* ── VERDICT HERO ── */
-    .verdict { grid-column: span 8; display: flex; flex-direction: column; justify-content: space-between; min-height: 210px; }
+    .verdict { grid-column: span 8; display: flex; flex-direction: column; justify-content: space-between; min-height: var(--verdict-min); }
     .verdict-title {
-      font-size: clamp(2.4rem, 4.6vw, 4rem); font-weight: 900; letter-spacing: -0.05em; line-height: 0.95;
+      font-size: var(--verdict-size); font-weight: 900; letter-spacing: -0.05em; line-height: 0.95;
       color: var(--status); text-shadow: 0 0 60px var(--status-dim);
       transition: color 0.5s var(--ease), text-shadow 0.5s var(--ease); margin-bottom: 0.5rem;
     }
@@ -198,7 +233,10 @@
     .last-backup .dot { width: 6px; height: 6px; border-radius: 1.5px; background: var(--lb, var(--ok)); border: 1px solid rgba(0,0,0,0.85); box-shadow: inset 0 0 2px rgba(255,255,255,0.4), 0 0 6px var(--lb, var(--ok)); }
 
     /* ── CARD PANEL & TACHOMETER ── */
-    .card { grid-column: span 4; display: flex; flex-direction: column; justify-content: space-between; min-height: 210px; }
+    /* Shares a grid row with .verdict, so BOTH must use the same floor — this
+       one being hardcoded at 210px is what kept the whole top row from
+       tightening no matter what the verdict did. */
+    .card { grid-column: span 4; display: flex; flex-direction: column; justify-content: space-between; min-height: var(--verdict-min); }
     .card-id-row { display: flex; align-items: center; gap: 0.5rem; min-height: 1.6rem; }
     .card-id { font-family: var(--font-mono); font-weight: 800; font-size: 0.95rem; letter-spacing: 0.03em; color: var(--text-main); }
     .card-edit {
@@ -233,7 +271,7 @@
     .card-edit.pick-color { color: var(--warn); animation: blink 2.4s ease-in-out infinite; }
     .card-edit.pick-color:hover { color: var(--warn); background: var(--warn-dim); }
     .gauge-val {
-      font-size: 3.6rem; font-weight: 900; line-height: 0.8; letter-spacing: -0.05em;
+      font-size: var(--gauge-val); font-weight: 900; line-height: 0.8; letter-spacing: -0.05em;
       font-variant-numeric: tabular-nums; transition: color 0.3s;
     }
     /* Wedge tachometer: thin at 0%, widens to 100%, pre-baked green→amber→red
@@ -322,7 +360,7 @@
     .stage.ready .fast-toggle input { accent-color: #000; }
 
     /* ── LEDGER ── */
-    .ledger { grid-column: span 12; }
+    .ledger { display: flex; flex-direction: column; min-height: 0; }
     .ses-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 1.1rem; margin-top: 1.4rem; }
     .ses-card {
       border: 1px solid var(--border-dim); border-radius: var(--r-md); padding: 1.4rem;
@@ -405,10 +443,15 @@
     .ornament {
       /* Always present — the glow does the animating. (An entrance fade here
          would delay the mark relative to the deck lighting up.) */
-      flex: 1 1 auto; display: flex; align-items: center; justify-content: center;
-      min-height: 220px; padding: 2.6rem 0 1.6rem; user-select: none;
+      /* 0 0 auto, not 1 1 auto: the ledger above absorbs the slack now, so the
+         mark keeps its own size and sits directly under the deck. */
+      flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+      min-height: var(--orn-min); padding: var(--orn-pad-t) 0 var(--orn-pad-b); user-select: none;
     }
-    .oak { display: flex; flex-direction: column; align-items: center; gap: 0.95rem; }
+    .oak { display: flex; flex-direction: column; align-items: center; gap: var(--orn-gap); }
+    /* Sized here rather than by the SVG's width/height attributes so the mark can
+       scale with the viewport — the attributes remain as the no-CSS fallback. */
+    .oak-mark { width: var(--orn-mark); height: var(--orn-mark); }
     /* At rest: no loop, no colored glow — just the chiseled inlay under clear coat.
        The neon-red glow only rides in with the ignition sequence (.ornament.lit).
        Heat/cool like a stove coil: a smooth ramp up, a long slow decay down. */
@@ -620,6 +663,71 @@
     .t-danger { --status: var(--danger); --status-dim: var(--danger-dim); --gauge: var(--danger); --gauge-dim: var(--danger-dim); }
     .t-neutral { --status: var(--neutral); --status-dim: var(--neutral-dim); --gauge: var(--brand); --gauge-dim: var(--brand-dim); }
 
+    /* ── SHORT VIEWPORTS ──
+       This sheet only ever adapted on width, but the deck is a fixed stack of
+       blocks whose total is TALL: at 1470x956 — an ordinary laptop — the page ran
+       212px past the fold and sliced the ornament in half. These steps tighten
+       the vertical rhythm so the whole deck, mark included, lands on screen.
+       Nothing is hidden or dropped; it just breathes less.
+
+       The steps MUST get monotonically tighter as the viewport shrinks. They are
+       plain max-height queries, so a looser rule further down would simply win —
+       which it did once, leaving 840px-tall windows roomier than 960px ones. */
+    @media (max-height: 1200px) {
+      :root {
+        --deck-pad: 1.15rem; --deck-gap: 0.85rem; --box-pad: 1.05rem;
+        --verdict-min: 150px; --verdict-size: clamp(2rem, 3.6vw, 3rem);
+        --orn-min: 104px; --orn-pad-t: 1rem; --orn-pad-b: 0.7rem;
+        --orn-mark: 88px; --orn-gap: 0.5rem; --gauge-val: 3rem;
+      }
+      .ses-grid { margin-top: 0.8rem; gap: 0.8rem; }
+    }
+    /* A 956px display is ~890px of page once browser chrome is taken out, which
+       is exactly where the deck stopped fitting. */
+    @media (max-height: 960px) {
+      :root {
+        --deck-pad: 0.7rem; --deck-gap: 0.6rem; --box-pad: 0.9rem;
+        --verdict-min: 130px; --verdict-size: clamp(1.8rem, 3.2vw, 2.6rem);
+        --orn-min: 84px; --orn-pad-t: 0.6rem; --orn-pad-b: 0.35rem;
+        --orn-mark: 72px; --orn-gap: 0.4rem; --gauge-val: 2.6rem;
+      }
+      .ses-grid { margin-top: 0.7rem; gap: 0.7rem; }
+    }
+    @media (max-height: 860px) {
+      :root {
+        --deck-pad: 0.6rem; --deck-gap: 0.5rem; --box-pad: 0.8rem;
+        --verdict-min: 110px; --verdict-size: clamp(1.6rem, 2.8vw, 2.2rem);
+        --orn-min: 70px; --orn-pad-t: 0.5rem; --orn-pad-b: 0.3rem;
+        --orn-mark: 60px; --orn-gap: 0.35rem; --gauge-val: 2.2rem;
+      }
+      .ses-grid { margin-top: 0.6rem; gap: 0.6rem; }
+    }
+    @media (max-height: 790px) {
+      :root {
+        --deck-pad: 0.5rem; --deck-gap: 0.42rem; --box-pad: 0.7rem;
+        --verdict-min: 92px; --verdict-size: clamp(1.45rem, 2.5vw, 1.9rem);
+        --orn-min: 56px; --orn-pad-t: 0.4rem; --orn-pad-b: 0.25rem;
+        --orn-mark: 50px; --orn-gap: 0.3rem; --gauge-val: 1.9rem;
+      }
+      .ses-grid { margin-top: 0.5rem; gap: 0.5rem; }
+    }
+
+    /* The session grid sizes to its rows and never scrolls inside itself.
+       `flex: 0 0 auto` = never grow, and critically never SHRINK — allowing it
+       to shrink crushed the grid to 145px against a 205px card, so a single
+       session rendered as a card sliced in half behind a scrollbar that had
+       nothing more to reveal.
+
+       There is a real trade-off here and it is resolved deliberately: with
+       enough sessions, the deck + a full ledger + the mark cannot all fit, and
+       something has to give. A scrollbar inside the panel is the worse answer —
+       it hides frames behind a control nobody looks for. So the panel always
+       shows every session it has, and the PAGE scrolls when it must. For any
+       ordinary number of sessions everything still lands on one screen, mark
+       included; only a long history pushes the mark below the fold. */
+    main { min-height: 0; }
+    .ses-grid { flex: 0 0 auto; }
+
     @media (max-width: 1000px) {
       .verdict { grid-column: span 12; }
       .card { grid-column: span 12; }
@@ -650,6 +758,7 @@
       <span class="conn demo" id="conn"><span class="conn-dot"></span><span id="conn-text">DEMO</span></span>
       <button class="reset-btn" id="vault-btn" onclick="openVaultPicker(false)" title="Choose the drive/folder your keepers get archived to.">⚙ VAULT</button>
       <button class="reset-btn" id="reset-btn" onclick="resetData()" title="Clear all sessions, backups & watermarks. Photos on cards and in your vault are not touched.">⟲ RESET</button>
+      <button class="reset-btn power-btn" id="power-btn" onclick="powerOff()" title="Stop the SPOOLR server. Nothing on your cards, in staging or in your vault is touched.">⏻ POWER</button>
       <span class="ver" id="ver">v1.1.0</span>
     </div>
   </header>
@@ -708,13 +817,18 @@
       <!-- PIPELINE -->
       <div class="pipeline" id="pipeline"></div>
 
-      <!-- LEDGER -->
-      <div class="box ledger" style="animation-delay:.24s">
-        <div class="label"><span>SESSION LEDGER</span><span id="ledger-count" style="color:var(--text-muted)"></span></div>
-        <div class="ses-grid" id="ses-grid"></div>
-        <button class="console-toggle" id="console-toggle" onclick="toggleConsole()" style="display:none">▸ show last output</button>
-        <div id="console"></div>
-      </div>
+    </div>
+
+    <!-- LEDGER — deliberately a direct flex child of <main>, NOT inside .grid.
+         It is the only block that grows without bound, so it has to be the one
+         that absorbs (and gives back) the leftover height; inside the 12-column
+         grid its row could only ever size to its content, which pushed the
+         ornament off the bottom of the screen. -->
+    <div class="box ledger" style="animation-delay:.24s">
+      <div class="label"><span>SESSION LEDGER</span><span id="ledger-count" style="color:var(--text-muted)"></span></div>
+      <div class="ses-grid" id="ses-grid"></div>
+      <button class="console-toggle" id="console-toggle" onclick="toggleConsole()" style="display:none">▸ show last output</button>
+      <div id="console"></div>
     </div>
 
     <!-- OAKLENS HOOD ORNAMENT — maker's mark set into the dead space below the deck -->
@@ -1677,6 +1791,32 @@
       b.disabled = false; b.textContent = '⟲ RESET';
     }
 
+    // Power off. The server stops answering the moment it honours this, so a
+    // failed fetch AFTER the request went out is success, not an error — the
+    // usual "did the request work" reasoning is inverted here.
+    async function powerOff() {
+      if (!LIVE) { toast('Nothing to power off — this page is not connected to a bridge'); return; }
+      if (!confirm('Power off SPOOLR?\n\nStops the dashboard server. Your photos, staging folders, vault and ledger are all left exactly as they are.\n\nStart it again from a terminal with:  spoolr ui')) return;
+      const b = document.getElementById('power-btn');
+      b.disabled = true; b.textContent = '⏻ …';
+      try { await fetch('/api/shutdown', { method: 'POST' }); } catch (e) { /* expected: it died mid-reply */ }
+      LIVE = false;
+      if (POLL) { clearInterval(POLL); POLL = null; }
+      showPoweredOff();
+    }
+
+    function showPoweredOff() {
+      if (document.querySelector('.powered-off')) return;
+      const d = document.createElement('div');
+      d.className = 'powered-off';
+      d.innerHTML = `<div class="po-mark">⏻</div>
+        <h3>SPOOLR powered off</h3>
+        <div>The dashboard server has stopped. Your cards, staging, vault and ledger are untouched.</div>
+        <div>Start it again from a terminal:</div>
+        <code>spoolr ui</code>`;
+      document.body.appendChild(d);
+    }
+
     async function runStageRaw(action) {
       try {
         const r = await fetch('/api/action/' + action, { method: 'POST' });
@@ -1687,6 +1827,7 @@
       } catch (e) { toast('failed'); }
     }
 
+    let POLL = null;      // the 4s state poll, so power-off can stop it
     let toastT;
     function toast(m) {
       const t = document.getElementById('toast');
@@ -1761,7 +1902,7 @@
       // Wear the card's colour BEFORE the reveal so ignition fires in it.
       applyAccent(LAST.card_present ? (LAST.card_color || DEFAULT_ACCENT) : DEFAULT_ACCENT, false);
       ignite();             // single reveal: paints real content, then lights it panel-by-panel
-      setInterval(fetchState, 4000);
+      POLL = setInterval(fetchState, 4000);
     }
     init();
   </script>

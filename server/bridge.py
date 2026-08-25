@@ -17,6 +17,7 @@ import shutil
 import socketserver
 import subprocess
 import sys
+import threading
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -395,6 +396,24 @@ class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self):
+        # Power off is handled before the /api/action/ gate and before the
+        # binary check: stopping the server must work even when the CLI cannot
+        # be found, since that is exactly when you most want to shut it down.
+        if self.path == "/api/shutdown":
+            if not self._same_origin():
+                self._json(403, {"error": "cross-origin request refused"})
+                return
+            self._json(200, {"success": True, "stopped": True})
+            try:
+                self.wfile.flush()
+            except Exception:
+                pass
+            # shutdown() blocks until serve_forever() returns, and serve_forever
+            # is what is running THIS handler — calling it inline would deadlock.
+            # Hand it to a separate thread so this response can finish first.
+            if HTTPD is not None:
+                threading.Thread(target=HTTPD.shutdown, daemon=True).start()
+            return
         if not self.path.startswith("/api/action/"):
             self._json(404, {"error": "not found"})
             return
@@ -555,16 +574,44 @@ def strip_ansi(text):
     return text
 
 
+# Set by run() so a request handler can stop the server it is running inside.
+HTTPD = None
+
+
+def _spoolr_already_serving():
+    """Is the thing holding our port one of ours, rather than a stranger?"""
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/api/state", timeout=1.5) as r:
+            return "ledger" in json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return False
+
+
 def run():
+    global HTTPD
     if not WEB_DIR.exists():
         print(f"  ✗ Web assets not found at {WEB_DIR}", file=sys.stderr)
         sys.exit(1)
     socketserver.TCPServer.allow_reuse_address = True
     try:
         httpd = socketserver.TCPServer(("127.0.0.1", PORT), SpoolrHandler)
+        HTTPD = httpd
     except OSError as exc:
+        # Almost always "you already have one running", and what you actually
+        # wanted was to look at it — so open that one instead of failing with a
+        # port suggestion. Only a genuinely foreign listener is an error.
+        if _spoolr_already_serving():
+            url = f"http://localhost:{PORT}"
+            print(f"\n  ⚡ SPOOLR is already running at {url} — opening it.")
+            print("     To stop it, hit ⏻ POWER in the dashboard header.\n")
+            try:
+                webbrowser.open(url)
+            except Exception:
+                pass
+            return
         print(f"  ✗ Could not bind to localhost:{PORT} — {exc}", file=sys.stderr)
-        print(f"    Another instance running? Try: SPOOLR_UI_PORT=7332 spoolr ui", file=sys.stderr)
+        print(f"    Something else is using that port. Try: SPOOLR_UI_PORT=7332 spoolr ui", file=sys.stderr)
         sys.exit(1)
     with httpd:
         url = f"http://localhost:{PORT}"
@@ -578,8 +625,12 @@ def run():
             pass
         try:
             httpd.serve_forever()
+            # serve_forever returns when the dashboard's power button calls
+            # shutdown(); Ctrl+C still arrives as KeyboardInterrupt below.
+            print("  Powered off from the dashboard. Bridge stopped.\n")
         except KeyboardInterrupt:
             print("\n  Shutting down dashboard bridge.")
+        finally:
             httpd.server_close()
 
 
