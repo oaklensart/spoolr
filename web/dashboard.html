@@ -190,8 +190,8 @@
 
     /* Base Card Box with Ambient Glow */
     .box {
-      background: radial-gradient(circle at 50% -10%, var(--card-glow, rgba(var(--brand-rgb), 0.02)), transparent 75%), var(--bg-panel);
-      border: 1px solid var(--card-border, var(--border-dim));
+      background: var(--bg-panel);
+      border: 1px solid var(--border-dim);
       border-radius: var(--r-lg);
       padding: var(--box-pad);
       position: relative;
@@ -199,13 +199,16 @@
       opacity: 0;
       transform: translateY(12px);
       animation: in 0.55s var(--ease) forwards;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 var(--card-glow-size, 0px) var(--card-glow-color, transparent);
-      transition: border-color 0.5s var(--ease), box-shadow 0.6s var(--ease), background 0.6s var(--ease);
+      box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.45), 
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02);
+      transition: border-color 0.5s var(--ease), box-shadow 0.6s var(--ease), background 0.6s var(--ease), transform 0.55s var(--ease);
     }
     .box::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-      background: linear-gradient(90deg, transparent, var(--card-top-shine, rgba(255, 255, 255, 0.06)), transparent);
-      pointer-events: none; transition: background 0.5s var(--ease);
+      background: linear-gradient(90deg, transparent, var(--brand), transparent);
+      opacity: 0.06;
+      pointer-events: none; transition: opacity 0.5s var(--ease);
     }
     @keyframes in { to { opacity: 1; transform: none; } }
     .label {
@@ -284,20 +287,27 @@
     /* ── SOUNDBOARD PIPELINE ── */
     .pipeline { grid-column: span 12; display: grid; grid-template-columns: repeat(5, 1fr); gap: 1rem; }
     .stage {
-      background: radial-gradient(circle at 50% -10%, var(--stage-glow, rgba(var(--brand-rgb), 0.02)), transparent 75%), var(--bg-panel);
+      background: var(--bg-panel);
       border: 1px solid var(--border-dim); border-radius: var(--r-md); padding: 1.3rem;
       display: flex; flex-direction: column; gap: 0.5rem; min-height: 150px; cursor: pointer; position: relative;
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02);
       transition: border-color 0.4s var(--ease), transform 0.28s var(--ease), background 0.4s var(--ease), box-shadow 0.4s var(--ease), color 0.4s var(--ease);
-      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
     }
     .stage::before {
       content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-      background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+      background: linear-gradient(90deg, transparent, var(--brand), transparent);
+      opacity: 0.08;
       pointer-events: none;
+      transition: opacity 0.4s var(--ease);
     }
     .stage:hover {
       transform: translateY(-3px); border-color: var(--border-bright);
-      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 16px rgba(var(--brand-rgb), 0.08);
+      box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.5), 
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02),
+        0 0 16px rgba(var(--brand-rgb), 0.08);
     }
     .stage[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
     .stage .st-top { display: flex; align-items: center; justify-content: space-between; }
@@ -325,21 +335,42 @@
     .pipeline .stage:last-child .st-arrow { display: none; }
 
     /* Stage States */
-    .stage.done { border-color: rgba(var(--ok-rgb), 0.45); box-shadow: 0 0 16px rgba(var(--ok-rgb), 0.14); }
+    .stage.done { 
+      border-color: rgba(var(--ok-rgb), 0.45); 
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02),
+        0 0 16px rgba(var(--ok-rgb), 0.14); 
+    }
     .stage.done .st-dot { background: var(--ok); box-shadow: inset 0 0 2px rgba(255,255,255,0.45), 0 0 9px var(--ok); }
     .stage.done .st-main { color: var(--ok); }
 
-    .stage.partial { border-color: rgba(255, 170, 0, 0.4); box-shadow: 0 0 16px rgba(255, 170, 0, 0.12); }
+    .stage.partial { 
+      border-color: rgba(255, 170, 0, 0.4); 
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02),
+        0 0 16px rgba(255, 170, 0, 0.12); 
+    }
     .stage.partial .st-dot { background: var(--warn); box-shadow: 0 0 10px var(--warn); animation: blink 1.4s infinite; }
     .stage.partial .st-main { color: var(--warn); }
 
-    .stage.blocked { border-color: rgba(255, 51, 68, 0.4); box-shadow: 0 0 16px rgba(255, 51, 68, 0.12); }
+    .stage.blocked { 
+      border-color: rgba(255, 51, 68, 0.4); 
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02),
+        0 0 16px rgba(255, 51, 68, 0.12); 
+    }
     .stage.blocked .st-dot { background: var(--danger); box-shadow: 0 0 10px var(--danger); }
     .stage.blocked .st-main { color: var(--danger); }
 
     .stage.ready {
       background: #ffffff; border-color: #ffffff;
-      box-shadow: 0 0 26px rgba(255, 255, 255, 0.28);
+      box-shadow: 
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.02),
+        0 0 26px rgba(255, 255, 255, 0.28);
     }
     .stage.ready .st-name, .stage.ready .st-metric { color: rgba(0, 0, 0, 0.6); }
     .stage.ready .st-main { color: #000000; }
@@ -555,17 +586,22 @@
     /* During ignition the boxes hold still (no entrance fade); each is lit
        individually by the .surge cascade below. */
     body.igniting .box { animation: none; opacity: 1; transform: none; }
+    
     body.ignited:not(.deck-lit) .box {
       /* Hold the settled state: without pinning animation/opacity here, dropping
          the .igniting class lets the base `.box { animation: in }` re-fire and every
          panel (most visibly the ledger) briefly fades out and back in. */
       animation: none; opacity: 1; transform: none;
-      --card-glow: rgba(var(--brand-rgb), 0.03);
-      --card-border: var(--border-dim);
-      --card-glow-size: 16px;
-      --card-glow-color: rgba(var(--brand-rgb), 0.04);
-      --card-top-shine: rgba(255, 255, 255, 0.08);
+      border-color: var(--border-dim);
+      box-shadow: 
+        0 8px 24px rgba(0, 0, 0, 0.45), 
+        0 0 16px rgba(var(--brand-rgb), 0.04),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.03);
     }
+    body.ignited:not(.deck-lit) .box::before {
+      opacity: 0.08;
+    }
+
     body.igniting .brand-dot {
       animation: none; background: var(--brand);
       box-shadow: 0 0 28px 6px var(--brand); transform: scale(1.3);
@@ -577,31 +613,38 @@
        weighted ~0.5 / 0.54 / 0.45 like its mip alphas. Each panel lights as a real
        emissive source, then settles. */
     .box.surge {
-      --card-glow: rgba(var(--brand-rgb), 0.16);
-      --card-border: rgba(var(--brand-rgb), 0.5);
-      --card-top-shine: rgba(var(--brand-rgb), 0.9);
+      border-color: rgba(var(--brand-rgb), 0.5) !important;
+      background: var(--bg-panel) !important;
       box-shadow:
         0 0 12px rgba(var(--brand-rgb), 0.5),
         0 0 40px 2px rgba(var(--brand-rgb), 0.4),
         0 0 96px 14px rgba(var(--brand-rgb), 0.26),
-        inset 0 0 26px rgba(var(--brand-rgb), 0.12);
-      transform: translateY(-2px);
-      transition: box-shadow 0.16s var(--ease), transform 0.16s var(--ease), background 0.16s, border-color 0.16s;
+        inset 0 0 26px rgba(var(--brand-rgb), 0.12),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.16) !important;
+      transform: translateY(-2px) !important;
     }
+    .box.surge::before {
+      opacity: 0.9 !important;
+    }
+
     .stage.channel-test {
-      --stage-glow: rgba(var(--brand-rgb), 0.3);
+      background: var(--bg-panel) !important;
       border-color: var(--brand) !important;
       box-shadow:
         0 0 12px rgba(var(--brand-rgb), 0.5),
         0 0 38px 2px rgba(var(--brand-rgb), 0.4),
         0 0 90px 12px rgba(var(--brand-rgb), 0.24),
-        inset 0 0 18px rgba(var(--brand-rgb), 0.16) !important;
-      transform: translateY(-4px) scale(1.02);
-      transition: box-shadow 0.16s var(--ease), transform 0.16s var(--ease);
+        inset 0 0 18px rgba(var(--brand-rgb), 0.16),
+        inset 0 40px 80px -40px rgba(var(--brand-rgb), 0.3) !important;
+      transform: translateY(-4px) scale(1.02) !important;
     }
-    .stage.channel-test .st-dot { background: var(--brand) !important; box-shadow: 0 0 20px 4px var(--brand) !important; transform: scale(1.6); }
-    .stage.channel-test .st-main { color: #ffffff !important; text-shadow: 0 0 20px var(--brand); }
+    .stage.channel-test::before {
+      opacity: 0.9 !important;
+    }
+    .stage.channel-test .st-dot { background: var(--brand) !important; box-shadow: 0 0 20px 4px var(--brand) !important; transform: scale(1.6) !important; }
+    .stage.channel-test .st-main { color: #ffffff !important; text-shadow: 0 0 20px var(--brand) !important; }
     .stage.channel-test .st-name { color: var(--brand) !important; }
+    .stage.channel-test .st-metric { color: var(--text-muted) !important; }
 
     /* ── IGNITION EASING ──
        Scoped to the sequence only (hover elsewhere stays snappy): a slow ramp as
@@ -614,19 +657,31 @@
                   background 0.72s cubic-bezier(0.5, 0, 0.75, 0.9),
                   border-color 0.72s cubic-bezier(0.5, 0, 0.75, 0.9);
     }
+    body.igniting .box.surge::before, body.deck-lit .box.surge::before,
+    body.igniting .stage.channel-test::before, body.deck-lit .stage.channel-test::before {
+      transition: opacity 0.72s cubic-bezier(0.5, 0, 0.75, 0.9);
+    }
+    
     body.igniting .box, body.deck-lit .box,
     body.igniting .stage, body.deck-lit .stage {
       transition: box-shadow 1.28s cubic-bezier(0.16, 0.7, 0.3, 1), transform 1.12s var(--ease),
                   background 1.28s cubic-bezier(0.16, 0.7, 0.3, 1),
                   border-color 1.28s cubic-bezier(0.16, 0.7, 0.3, 1);
     }
+    body.igniting .box::before, body.deck-lit .box::before,
+    body.igniting .stage::before, body.deck-lit .stage::before {
+      transition: opacity 1.28s cubic-bezier(0.16, 0.7, 0.3, 1);
+    }
+
     body.igniting .st-dot, body.deck-lit .st-dot,
     body.igniting .st-main, body.deck-lit .st-main,
-    body.igniting .st-name, body.deck-lit .st-name {
+    body.igniting .st-name, body.deck-lit .st-name,
+    body.igniting .st-metric, body.deck-lit .st-metric {
       transition: box-shadow 1.12s cubic-bezier(0.16, 0.7, 0.3, 1), background 1.12s cubic-bezier(0.16, 0.7, 0.3, 1),
                   transform 1.12s var(--ease), color 1.12s cubic-bezier(0.16, 0.7, 0.3, 1),
                   text-shadow 1.12s cubic-bezier(0.16, 0.7, 0.3, 1);
     }
+    
     .st-dot.fire { background: var(--brand) !important; box-shadow: 0 0 20px 3px var(--brand) !important; transform: scale(1.6); }
     .st-main.flare { animation: flare 1.15s var(--ease); }
     .verdict-title.flare { animation: flare 1.3s var(--ease); }
@@ -1236,9 +1291,15 @@
         const el = root.children[i];
         if (!el) return;
         el.dataset.key = st.key;
-        if (!igniting && !el.classList.contains('channel-test')) {
-          el.className = 'stage ' + st.cls;
-        }
+
+        // Preserve ignition classes while updating base state classes so that 
+        // the drop-off cascade naturally falls back to the true underlying state.
+        let newCls = 'stage ' + st.cls;
+        ['channel-test', 'surge', 'busy', 'running', 'active-run'].forEach(c => {
+          if (el.classList.contains(c)) newCls += ' ' + c;
+        });
+        el.className = newCls.trim();
+
         if (!st.act) {
           el.setAttribute('aria-disabled', 'true');
           el.onclick = null;
@@ -1246,10 +1307,11 @@
           el.removeAttribute('aria-disabled');
           el.onclick = (e) => { if (e.target.closest('.fast-toggle')) return; runStage(st.act, el); };
         }
+        
         const nameEl = el.querySelector('.st-name');
         if (nameEl) nameEl.textContent = `${i + 1}· ${st.name}`;
         const mainEl = el.querySelector('.st-main');
-        if (mainEl && !igniting) mainEl.textContent = st.main;
+        if (mainEl) mainEl.textContent = st.main;
         const metricEl = el.querySelector('.st-metric');
         if (metricEl) metricEl.textContent = st.metric;
       });
