@@ -2,6 +2,10 @@
 
 > **Card memory, multi-session offload & local archival for photographers, with a verdict you can actually trust.**
 
+Most software treats an SD card as a dumb, temporary flash drive: a generic source
+folder to be emptied into a catalog and wiped. SPOOLR treats it as what it physically
+is, a named piece of hardware with an identity, a memory, and a lifecycle.
+
 SPOOLR gives your physical SD cards a permanent identity, offloads each shoot into
 its own isolated session folder, archives your keepers to a local vault with
 **read-back SHA-256 verification**, and only ever tells you a card is **Safe to
@@ -195,6 +199,43 @@ staging and the vault somewhere else.
 - `SPOOLR_BIN`: the binary the dashboard bridge drives (set automatically by `spoolr ui`).
 - `SPOOLR_LIB`: set to `1` to source `bin/spoolr` without running the dispatcher, so
   individual functions can be called directly.
+
+---
+
+## What SPOOLR is not
+
+It is not a catalog manager, not a culling and metadata engine, and not a film-set DIT
+station. Those tools all start from the assumption that the files have already landed
+safely on a disk. SPOOLR owns the part before that: the bridge between the camera and
+everything else, where a card is identified, offloaded incrementally, archived with
+verification, and finally cleared.
+
+Three things follow from that focus:
+
+- **A copy is not a verdict.** Most tools report "copy complete", which means the write
+  buffer flushed. SPOOLR re-reads both sides and byte-matches them before it will say a
+  word about formatting.
+- **A card has a memory.** Commercial work formats after every shoot. Street,
+  documentary, travel and personal work does not: one large card carries weeks. A
+  per-card rolling watermark makes the next pull incremental instead of a duplicate
+  import or a manual date-range hunt.
+- **A ledger outlives the drives.** If a staging disk dies before the card is cleared,
+  the card is still a backup, and the index needed to read it back lives on your Mac.
+
+## Who it's for
+
+- Photographers who shoot across days or weeks on one large card and want the next pull
+  to be incremental.
+- People who want certainty at the moment of formatting rather than a progress bar that
+  already closed.
+- Mac users who prefer local-first plain-text data, no subscription, and no catalog.
+
+## Design constraints
+
+Bash, the Python standard library, and a single file of vanilla HTML and CSS. No
+Electron, no npm, no pip, nothing to install but the script itself. It launches
+instantly and holds no state you cannot read in a text editor twenty years from now,
+which for a custody tool matters more than query speed.
 
 ---
 
