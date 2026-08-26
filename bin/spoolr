@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # SPOOLR — Card Memory & Local Archival Engine for Photographers
-# v1.1.0 (Open Source Edition) · https://github.com/oaklensart/spoolr
+# v1.2.0 (Open Source Edition) · https://github.com/oaklensart/spoolr
 #
 # Design promise: the "SAFE TO FORMAT" verdict is never printed unless every
 # keeper has been read back out of your vault and its bytes confirmed to match
@@ -31,7 +31,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # ── Colors & Styling ──
 if [ -t 1 ]; then
