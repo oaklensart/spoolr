@@ -66,7 +66,30 @@ This is the non negotiable core of the tool:
 
 ---
 
-## The 4 Step Workflow
+## Start Here: The Bento Dashboard
+
+After installing, this is the only command you need:
+
+```bash
+spoolr ui
+```
+
+Everything happens in the browser from there. You never have to touch the terminal again.
+
+The dashboard runs the whole workflow. Dependency free (Python standard library only), it detects your card live and walks you through a pipeline that lights up as each stage completes:
+
+1. **Name and Color the Card** inline to write the card permanent identity and color profile.
+2. **Pull** offloads new frames and auto peels previews. On a card first pull it asks what counts as new right in the browser. Panel turns green with the RAW count.
+3. **Peel** turns green when every RAW has a preview, amber if some could not be read.
+4. **Tag** opens the session folder in Finder to color tag your keepers.
+5. **Backup** shows an attached vault picker on first run; after that, keepers are verified into the vault and the panel turns green.
+6. **Reconcile** turns green for SAFE, red for not safe.
+
+---
+
+## The Same Workflow From the Terminal
+
+Every step above has a command behind it, for scripting or if you simply prefer it. The dashboard and the CLI share one engine and one ledger, so you can move between them freely.
 
 ```bash
 # 1. Insert the card and offload everything new since your last pull
@@ -111,23 +134,6 @@ spoolr where --json      # for scripts and the dashboard
 
 ---
 
-## The Bento Dashboard (`spoolr ui`)
-
-```bash
-spoolr ui
-```
-
-The dashboard runs the whole workflow from the browser, leaving the terminal optional. Dependency free (Python standard library only), it detects your card live and walks you through a pipeline that lights up as each stage completes:
-
-1. **Name and Color the Card** inline to write the card permanent identity and color profile.
-2. **Pull** offloads new frames and auto peels previews. On a card first pull it asks what counts as new right in the browser. Panel turns green with the RAW count.
-3. **Peel** turns green when every RAW has a preview, amber if some could not be read.
-4. **Tag** opens the session folder in Finder to color tag your keepers.
-5. **Backup** shows an attached vault picker on first run; after that, keepers are verified into the vault and the panel turns green.
-6. **Reconcile** turns green for SAFE, red for not safe.
-
----
-
 ## Commands
 
 | Command | Description |
@@ -160,11 +166,13 @@ The dashboard runs the whole workflow from the browser, leaving the terminal opt
 curl -fsSL https://raw.githubusercontent.com/oaklensart/spoolr/main/install.sh | bash
 ```
 
-Then verify your setup:
+Then open the dashboard:
 
 ```bash
-spoolr doctor
+spoolr ui
 ```
+
+That is the whole setup. If something looks wrong, `spoolr doctor` checks your environment and reports what it finds.
 
 ### Requirements
 
