@@ -12,6 +12,15 @@ NEXT-SESSION.md
 .claude/settings.local.json
 .claude/worktrees/
 
+# The 4K capture rig lives on the demo/capture branch, not here. This keeps a
+# stray checkout of it from ever being staged into a commit on main. Files
+# already tracked on that branch are unaffected: .gitignore does not apply to
+# tracked paths.
+demo/
+
+# Render output, if the rig is ever run from inside the repo
+.spoolr-demo/
+
 # Python bytecode cache
 __pycache__/
 *.pyc
