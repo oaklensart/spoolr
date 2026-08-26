@@ -443,9 +443,12 @@
     .ornament {
       /* Always present — the glow does the animating. (An entrance fade here
          would delay the mark relative to the deck lighting up.) */
-      /* 0 0 auto, not 1 1 auto: the ledger above absorbs the slack now, so the
-         mark keeps its own size and sits directly under the deck. */
-      flex: 0 0 auto; display: flex; align-items: center; justify-content: center;
+      /* Never grows or shrinks — the mark keeps its size — but `margin-top:auto`
+         hands it any slack there is, so on a tall screen with a short ledger it
+         settles at the bottom of the deck instead of floating mid-page above a
+         void. */
+      flex: 0 0 auto; margin-top: auto;
+      display: flex; align-items: center; justify-content: center;
       min-height: var(--orn-min); padding: var(--orn-pad-t) 0 var(--orn-pad-b); user-select: none;
     }
     .oak { display: flex; flex-direction: column; align-items: center; gap: var(--orn-gap); }
