@@ -14,7 +14,16 @@ echo -e "${BOLD}⚡ SPOOLR INSTALLER${NC} — Card Memory & Archival Engine"
 echo ""
 
 # ── Locate sources (local checkout, or download a tarball if piped via curl) ──
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+# Piped through curl means BASH_SOURCE is an empty array, which is an unbound
+# variable under `set -u`. Test it before dereferencing: an empty SCRIPT_DIR is
+# the signal to download rather than an accident of where the user happened to
+# be standing. (dirname "" returns ".", so guarding with :- alone would silently
+# make the current directory look like a checkout.)
+if [ -n "${BASH_SOURCE[0]:-}" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+else
+  SCRIPT_DIR=""
+fi
 SRC_ROOT="$SCRIPT_DIR"
 
 if [ -z "$SRC_ROOT" ] || [ ! -f "$SRC_ROOT/bin/spoolr" ]; then
