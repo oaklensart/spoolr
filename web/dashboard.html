@@ -1250,6 +1250,10 @@
       else P.push({ key: 'peel', name: 'Peel', cls: '', main: s.raws + ' RAWs', metric: 'peel previews', act: 'peel' });
       // TAG (reveal)
       if (!s) P.push({ key: 'tag', name: 'Tag', cls: '', main: '—', metric: 'in Finder', act: null });
+      // Once frames have gone to the vault we know how many were actually kept,
+      // so the stage stops saying "Reveal" forever and reports the cull. Before
+      // that there is nothing true to count — every RAW is a keeper by default.
+      else if (+s.backed > 0) P.push({ key: 'tag', name: 'Tag', cls: 'done', main: s.backed + ' keepers', metric: 'selected for the vault', act: 'reveal' });
       else P.push({ key: 'tag', name: 'Tag', cls: '', main: 'Reveal', metric: 'tag keepers in Finder', act: 'reveal' });
       // BACKUP
       if (!s) P.push({ key: 'backup', name: 'Backup', cls: '', main: '—', metric: 'collect keepers', act: null });
@@ -1397,6 +1401,9 @@
 
     async function runStage(act, el) {
       if (!LIVE) { toast('Runs need the live bridge (spoolr ui)'); return; }
+      // A second click while a stage is mid-run would queue a duplicate CLI
+      // invocation behind the first — and on camera it reads as a stutter.
+      if (el && (el.classList.contains('busy') || el.classList.contains('running'))) return;
       let action = act, body = null;
       if (act === 'pull') {
         if (LAST && LAST.card_first_run) { const bl = await chooseBaseline(); if (!bl) return; body = { baseline: bl }; }
