@@ -1,6 +1,6 @@
 # SPOOLR
 
-A Mac app for photographers that offloads camera cards and verifies your backups before you format.
+A Mac app for photographers that manages your camera card from first frame to last megabyte. It remembers what you pulled across multiple shoots, verifies your backups, and eliminates the guessing before you format.
 
 ---
 
