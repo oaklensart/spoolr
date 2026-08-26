@@ -593,9 +593,9 @@ def run():
     if not WEB_DIR.exists():
         print(f"  ✗ Web assets not found at {WEB_DIR}", file=sys.stderr)
         sys.exit(1)
-    socketserver.TCPServer.allow_reuse_address = True
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
     try:
-        httpd = socketserver.TCPServer(("127.0.0.1", PORT), SpoolrHandler)
+        httpd = socketserver.ThreadingTCPServer(("127.0.0.1", PORT), SpoolrHandler)
         HTTPD = httpd
     except OSError as exc:
         # Almost always "you already have one running", and what you actually
