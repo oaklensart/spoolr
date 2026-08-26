@@ -1,10 +1,16 @@
-# Local backups of pre-1.1 originals (not part of the package)
-.attic/
 # macOS
 .DS_Store
 
-# Internal handoff notes — contains personal paths; scrub before publishing
+# Local backups of pre-1.1 originals (not part of the package)
+.attic/
+
+# Internal handoff notes: contains personal paths, scrub before publishing
 NEXT-SESSION.md
+
+# Claude Code machine-local state. A project .claude/settings.json or
+# .claude/skills/ can still be committed deliberately; these cannot.
+.claude/settings.local.json
+.claude/worktrees/
 
 # Python bytecode cache
 __pycache__/
