@@ -1,3 +1,8 @@
+
+
+https://github.com/user-attachments/assets/cb0830b6-5de3-4e32-95ba-2b0b90af20d3
+
+
 # SPOOLR
 
 A Mac app for photographers that manages your camera card from first frame to last megabyte. It remembers what you pulled across multiple shoots, verifies your backups, and eliminates the guessing before you format.
