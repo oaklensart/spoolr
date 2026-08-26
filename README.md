@@ -7,6 +7,20 @@ https://github.com/user-attachments/assets/cb0830b6-5de3-4e32-95ba-2b0b90af20d3
 
 A Mac app for photographers that manages your camera card from first frame to last megabyte. It remembers what you pulled across multiple shoots, verifies your backups, and eliminates the guessing before you format.
 
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oaklensart/spoolr/main/install.sh | bash
+```
+
+Then open the dashboard:
+
+```bash
+spoolr ui
+```
+
+That is the whole setup. macOS only, no dependencies to install, nothing to sign up for. The installer offers to put `spoolr` on your PATH and will not touch your shell profile unless you say yes.
+
 ---
 
 ## The Dirty Secret of Photography (Why This Exists)
@@ -158,23 +172,9 @@ spoolr where --json      # for scripts and the dashboard
 
 ---
 
-## Installation and Requirements
+## Requirements
 
-### Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/oaklensart/spoolr/main/install.sh | bash
-```
-
-Then open the dashboard:
-
-```bash
-spoolr ui
-```
-
-That is the whole setup. If something looks wrong, `spoolr doctor` checks your environment and reports what it finds.
-
-### Requirements
+Install is a one liner at the top of this page. If anything looks wrong afterwards, `spoolr doctor` checks your environment and reports what it finds.
 
 * macOS with `bash`, `rsync`, and a SHA256 tool (all built in). SPOOLR prefers the native `/sbin/sha256sum` and falls back to `/usr/bin/shasum`.
 * **Recommended:** `brew install exiftool` for reliable embedded preview extraction and accurate shoot dates.

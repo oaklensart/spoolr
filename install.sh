@@ -62,11 +62,75 @@ echo -e "  ${GREEN}✓${NC} Executable installed to ${BOLD}$INSTALL_DIR/spoolr${
 echo -e "  ${GREEN}✓${NC} Dashboard + bridge installed under ${BOLD}$CFG_DIR${NC}"
 echo -e "  ${GREEN}✓${NC} Config and ledgers initialized"
 
-# ── PATH hint ──
+# ── PATH ──
+# ~/.local/bin is where this lands whenever /usr/local/bin needs root, and it is
+# not on the default macOS PATH. Left alone, a successful install is followed by
+# "command not found" on the user's very first command. So offer to fix it, and
+# take no for an answer with something useful either way.
+#
+# The prompt has to come from /dev/tty: piping through curl puts the *script* on
+# stdin, so a plain `read` would consume the installer's own source. Where there
+# is no terminal at all (CI, automation) nothing is written and the line is just
+# printed, because an installer that silently edits a shell profile with no one
+# watching is worse than one that asks twice.
+PATH_LINE="export PATH=\"$INSTALL_DIR:\$PATH\""
+
+shell_profile() {
+  case "$(basename "${SHELL:-/bin/zsh}")" in
+    zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+    bash) if [ -f "$HOME/.bash_profile" ]; then printf '%s\n' "$HOME/.bash_profile"
+          else printf '%s\n' "$HOME/.bashrc"; fi ;;
+    *)    printf '' ;;   # fish and friends use different syntax; do not guess
+  esac
+}
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) : ;;
-  *) echo -e "  ${YELLOW}⚠ $INSTALL_DIR is not on your PATH.${NC} Add to your shell profile:"
-     echo -e "      export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
+  *)
+    PROFILE="$(shell_profile)"
+    PRETTY="${PROFILE/#$HOME/~}"
+    echo ""
+    echo -e "  ${YELLOW}One more step.${NC} $INSTALL_DIR is not on your PATH,"
+    echo -e "  so your shell cannot find ${BOLD}spoolr${NC} yet."
+    echo ""
+
+    if [ -n "$PROFILE" ] && grep -qsF "$INSTALL_DIR" "$PROFILE"; then
+      echo -e "  ${GREEN}✓${NC} $PRETTY already adds it. Open a new terminal tab and you are set."
+    else
+      # Can we actually ask a human?
+      ANSWER=""; ASKED=1
+      if [ -n "$PROFILE" ] && [ "${SPOOLR_ASSUME_YES:-0}" != "1" ]; then
+        if [ -t 0 ]; then
+          printf "  Add it to %s for you? [Y/n] " "$PRETTY"
+          IFS= read -r ANSWER && ASKED=0
+        elif (exec 3</dev/tty) 2>/dev/null; then
+          printf "  Add it to %s for you? [Y/n] " "$PRETTY"
+          IFS= read -r ANSWER < /dev/tty && ASKED=0
+        fi
+      fi
+
+      if [ -n "$PROFILE" ] && [ "${SPOOLR_ASSUME_YES:-0}" = "1" ]; then
+        printf '\n# Added by the SPOOLR installer\n%s\n' "$PATH_LINE" >> "$PROFILE"
+        echo -e "  ${GREEN}✓${NC} Added to $PRETTY."
+      elif [ "$ASKED" = "0" ]; then
+        case "${ANSWER:-Y}" in
+          [Nn]*)
+            echo ""
+            echo -e "  Left alone. Two ways to run it, whichever you prefer:"
+            echo -e "    Add this to $PRETTY:  ${CYAN}$PATH_LINE${NC}"
+            echo -e "    Or skip PATH entirely: ${CYAN}$INSTALL_DIR/spoolr ui${NC}" ;;
+          *)
+            printf '\n# Added by the SPOOLR installer\n%s\n' "$PATH_LINE" >> "$PROFILE"
+            echo ""
+            echo -e "  ${GREEN}✓${NC} Added to $PRETTY. Open a new terminal tab, or run:"
+            echo -e "      ${CYAN}source $PRETTY${NC}" ;;
+        esac
+      else
+        echo -e "  Add this line to your shell profile:"
+        echo -e "      ${CYAN}$PATH_LINE${NC}"
+        echo -e "  Or skip PATH entirely: ${CYAN}$INSTALL_DIR/spoolr ui${NC}"
+      fi
+    fi ;;
 esac
 
 echo ""
