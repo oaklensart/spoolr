@@ -227,6 +227,8 @@ def get_full_state():
         "fill_pct": 0,
         "free_space": "—",
         "headroom_frames": 0,
+        "new_frames": 0,
+        "total_raws": 0,
         "verdict": "idle",
         "last_backup": "No backups yet",
         "sessions": [],
@@ -258,6 +260,8 @@ def get_full_state():
         color = str(p.get("card_color", "") or "").lower()
         state["card_color"] = color if color in CARD_PALETTE else ""
         state["num_cards"] = p.get("num_cards", 0)
+        state["new_frames"] = int(p.get("new_frames", 0) or 0)
+        state["total_raws"] = int(p.get("total_raws", 0) or 0)
         if present:
             state["card_id"] = "CARD " + (p.get("card_id") or "?")
             state["fill_pct"] = p.get("fill_pct", 0)
@@ -268,6 +272,8 @@ def get_full_state():
             state["fill_pct"] = 0
             state["free_space"] = "—"
             state["headroom_frames"] = 0
+            state["new_frames"] = 0
+            state["total_raws"] = 0
         state["staging_root"] = p.get("staging_root", state.get("staging_root", ""))
         state["vault_root"] = p.get("vault_root", state.get("vault_root", ""))
 
@@ -344,9 +350,15 @@ def get_full_state():
     # card in the reader: it is written per CLI action, so it genuinely is that
     # card's conclusion, and it beats the ledger to a just-finished verify. For
     # any other card, derive pessimistically from this card's own history.
-    if state["card_present"] and snap_card != cur:
-        state["verdict"] = derive_verdict(mine)
-    elif not state["card_present"]:
+    # CRITICAL: If the card has new, un-offloaded frames, it is NEVER safe to format.
+    if state["card_present"]:
+        if state.get("new_frames", 0) > 0:
+            state["verdict"] = "idle"
+        elif snap_card != cur:
+            state["verdict"] = derive_verdict(mine)
+        elif state.get("total_raws", 0) == 0 and not mine:
+            state["verdict"] = "idle"
+    else:
         state["verdict"] = "no_card"
 
     state["card_id"] = ("CARD " + cur) if state["card_present"] and cur else "NO CARD"

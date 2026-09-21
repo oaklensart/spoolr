@@ -1733,15 +1733,26 @@ json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 run_probe() {
   _scan_cards
   local present=false id="" unnamed=false first_run=false pct=0 free="—" headroom=0 color=""
+  local new_frames=0 total_raws=0
   if (( ${#FOUND_CARDS[@]} >= 1 )); then
     CARD="${FOUND_CARDS[0]}"; _identify_card
     present=true; id="$CARD_ID"; color="${CARD_COLOR:-}"
     [ "${CARD_UNNAMED:-0}" = "1" ] && unnamed=true
     [ -e "$MARKER" ] || first_run=true    # no watermark yet → first pull will ask what's "new"
     get_card_telemetry; pct=${CARD_PCT:-0}; free="$CARD_FREE_H"; headroom=${CARD_HEADROOM:-0}
+    local dcim_dir="$CARD/DCIM"
+    [ -d "$dcim_dir" ] || dcim_dir="$CARD"
+    if [ -d "$dcim_dir" ]; then
+      total_raws=$(find_raws "$dcim_dir" | tr -cd '\0' | wc -c | tr -d ' ')
+      if [ "$first_run" = "true" ]; then
+        new_frames=$total_raws
+      elif [ -e "$MARKER" ]; then
+        new_frames=$(find_raws "$dcim_dir" -newer "$MARKER" | tr -cd '\0' | wc -c | tr -d ' ')
+      fi
+    fi
   fi
   cat <<EOF
-{"card_present": $present, "card_id": "$(json_escape "$id")", "card_unnamed": $unnamed, "card_first_run": $first_run, "card_color": "$(json_escape "$color")", "num_cards": ${#FOUND_CARDS[@]}, "fill_pct": ${pct:-0}, "free_space": "$(json_escape "$free")", "headroom_frames": ${headroom:-0}, "staging_root": "$(json_escape "$STAGING_ROOT")", "vault_root": "$(json_escape "$VAULT_ROOT")"}
+{"card_present": $present, "card_id": "$(json_escape "$id")", "card_unnamed": $unnamed, "card_first_run": $first_run, "card_color": "$(json_escape "$color")", "num_cards": ${#FOUND_CARDS[@]}, "fill_pct": ${pct:-0}, "free_space": "$(json_escape "$free")", "headroom_frames": ${headroom:-0}, "new_frames": ${new_frames:-0}, "total_raws": ${total_raws:-0}, "staging_root": "$(json_escape "$STAGING_ROOT")", "vault_root": "$(json_escape "$VAULT_ROOT")"}
 EOF
 }
 

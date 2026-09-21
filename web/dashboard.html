@@ -1088,12 +1088,18 @@
       safe: { t: 'safe', g: 1, title: 'Safe to Format', sub: 'Every keeper re-read and byte-matched in your vault. You may format the card.' },
     };
 
-    function applyVerdict(v) {
+    function applyVerdict(v, d) {
       const c = V[v] || V.idle, body = document.getElementById('body');
       body.className = 't-' + c.t + (c.g ? ' glow' : '') + (igniting ? ' igniting' : (ignited ? ' ignited' : ''));
-      document.getElementById('v-title').textContent = c.title;
-      document.getElementById('v-sub').textContent = c.sub;
-      document.getElementById('v-label').textContent = 'WORKFLOW // ' + v.toUpperCase();
+      let title = c.title, sub = c.sub, label = 'WORKFLOW // ' + v.toUpperCase();
+      if (d && d.card_present && d.new_frames > 0) {
+        title = 'Ready';
+        sub = `${d.new_frames} new frame${d.new_frames === 1 ? '' : 's'} on card. Pull to offload.`;
+        label = 'WORKFLOW // READY';
+      }
+      document.getElementById('v-title').textContent = title;
+      document.getElementById('v-sub').textContent = sub;
+      document.getElementById('v-label').textContent = label;
     }
 
     function styleBackup(iso, rel) {
@@ -1237,12 +1243,19 @@
 
     // ── SOUNDBOARD PIPELINE (IN-PLACE RETENTION) ──
     function stages(d) {
-      const s = (d.sessions && d.sessions[0]) || null;
+      const hasNew = d.card_present && d.new_frames > 0;
+      const s = (!hasNew && d.sessions && d.sessions[0]) || null;
       const P = [];
       // PULL
-      if (!d.card_present && !s) P.push({ key: 'pull', name: 'Pull', cls: '', main: '—', metric: 'no card', act: null });
-      else if (!s) P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: 'Spool the card', metric: 'offload new frames', act: 'pull', fast: true });
-      else P.push({ key: 'pull', name: 'Pull', cls: 'done', main: s.frames + ' RAWs', metric: 'offloaded', act: 'pull', fast: true });
+      if (!d.card_present && !s) {
+        P.push({ key: 'pull', name: 'Pull', cls: '', main: '—', metric: 'no card', act: null });
+      } else if (hasNew) {
+        P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: `${d.new_frames} NEW`, metric: 'offload new frames', act: 'pull', fast: true });
+      } else if (!s) {
+        P.push({ key: 'pull', name: 'Pull', cls: 'ready', main: 'Spool the card', metric: 'offload new frames', act: 'pull', fast: true });
+      } else {
+        P.push({ key: 'pull', name: 'Pull', cls: 'done', main: s.frames + ' RAWs', metric: 'offloaded', act: 'pull', fast: true });
+      }
       // PEEL
       if (!s) P.push({ key: 'peel', name: 'Peel', cls: '', main: '—', metric: 'previews', act: null });
       else if (s.jpgs >= s.raws && s.raws > 0) P.push({ key: 'peel', name: 'Peel', cls: 'done', main: s.jpgs + ' previews', metric: 'all RAWs peeled', act: 'peel' });
@@ -1675,7 +1688,7 @@
       // guard so the cascade below owns them) — the panels light up showing real data.
       if (LAST) {
         renderCard(LAST);
-        applyVerdict(LAST.card_present ? LAST.verdict : 'no_card');
+        applyVerdict(LAST.card_present ? LAST.verdict : 'no_card', LAST);
         styleBackup(LAST.last_backup, LAST.last_backup_rel);
         renderPipeline(LAST);
         renderSessions(LAST.ledger || LAST.sessions);
@@ -1775,7 +1788,7 @@
         ignited = true;
         if (LAST) {
           renderCard(LAST);
-          applyVerdict(LAST.card_present ? LAST.verdict : 'no_card');
+          applyVerdict(LAST.card_present ? LAST.verdict : 'no_card', LAST);
           styleBackup(LAST.last_backup, LAST.last_backup_rel);
           renderPipeline(LAST);
           renderSessions(LAST.ledger || LAST.sessions);
@@ -1816,7 +1829,7 @@
       if (!pendingColor) applyAccent(d.card_present ? (d.card_color || DEFAULT_ACCENT) : DEFAULT_ACCENT);
       if (igniting) { return; } // ignition smoothly owns visual interpolation until completion
       renderCard(d);
-      applyVerdict(d.card_present ? d.verdict : 'no_card');
+      applyVerdict(d.card_present ? d.verdict : 'no_card', d);
       styleBackup(d.last_backup, d.last_backup_rel);
       renderPipeline(d);
       renderSessions(d.ledger || d.sessions);
@@ -1931,23 +1944,23 @@
       if (window.event && event.target) event.target.classList.add('active');
       const wasNoCard = LAST && !LAST.card_present;
       const D = {
-        nocard: { card_present: false, verdict: 'no_card', last_backup: 'No backups yet', sessions: [] },
-        fresh: { card_present: true, card_unnamed: false, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'idle', last_backup: 'No backups yet', sessions: [] },
+        nocard: { card_present: false, verdict: 'no_card', last_backup: 'No backups yet', sessions: [], new_frames: 0, total_raws: 0 },
+        fresh: { card_present: true, card_unnamed: false, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'idle', last_backup: 'No backups yet', sessions: [], new_frames: 12, total_raws: 12 },
         pulled: {
-          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet',
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet', new_frames: 0, total_raws: 56,
           sessions: [ses('AUG 24', 'SES-019', 56, 56, 0, 56, 'PENDING')]
         },
         partial: {
-          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet',
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'staged', last_backup: 'No backups yet', new_frames: 0, total_raws: 56,
           sessions: [ses('AUG 24', 'SES-019', 56, 52, 0, 56, 'PENDING')]
         },
         backed: {
-          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'backed',
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'backed', new_frames: 0, total_raws: 56,
           last_backup: new Date(Date.now() - 6 * 3600e3).toISOString(), last_backup_rel: '6h ago',
           sessions: [ses('AUG 24', 'SES-019', 56, 56, 18, 18, 'PENDING')]
         },
         safe: {
-          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'safe',
+          card_present: true, card_name: 'BRAVO', fill_pct: 42, card_color: 'cyanotype', headroom_frames: 3420, verdict: 'safe', new_frames: 0, total_raws: 56,
           last_backup: new Date(Date.now() - 6 * 3600e3).toISOString(), last_backup_rel: '6h ago',
           sessions: [ses('AUG 24', 'SES-019', 56, 56, 18, 18, 'VERIFIED'), ses('AUG 20', 'SES-018', 42, 42, 14, 14, 'VERIFIED')]
         },

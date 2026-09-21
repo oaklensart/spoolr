@@ -109,7 +109,7 @@ ck "probe reflects the new vault" '"$ING" probe 2>/dev/null | grep -q "thevault"
 
 say "probe emits valid JSON with live card fields"
 OUT="$("$ING" probe 2>/dev/null)"
-ck "probe JSON parses & reports the card" 'printf "%s" "$OUT" | python3 -c "import sys,json;d=json.load(sys.stdin);assert d[\"card_present\"];assert \"card_first_run\" in d" 2>/dev/null'
+ck "probe JSON parses & reports the card" 'printf "%s" "$OUT" | python3 -c "import sys,json;d=json.load(sys.stdin);assert d[\"card_present\"];assert \"card_first_run\" in d;assert \"new_frames\" in d;assert \"total_raws\" in d" 2>/dev/null'
 
 say "name renames the card and carries the watermark"
 "$ING" name ZULU >/dev/null 2>&1
@@ -132,7 +132,7 @@ say "session ids never collide, even past a foreign ledger row"
 # wrong session's frames out of backups.tsv.
 printf '2019-01-01\tForeign\t2019-01-01\t4 frames\n' >> "$SPOOLR_CONFIG_DIR/ledger.tsv"
 head -c 7000 /dev/urandom > "$CARD/DCIM/100_TEST/COLLIDE.RW2"
-"$ING" >/dev/null 2>&1
+"$ING" --baseline=all >/dev/null 2>&1
 ck "every SES id is unique" '[ "$(cut -f2 "$SPOOLR_CONFIG_DIR/ledger.tsv" | grep "^SES-" | sort | uniq -d | wc -l | tr -d " ")" = 0 ]'
 ck "foreign row still preserved" 'grep -q Foreign "$SPOOLR_CONFIG_DIR/ledger.tsv"'
 
