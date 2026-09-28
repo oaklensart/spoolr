@@ -350,7 +350,10 @@ AVG_FRAME_MB=25
 CARD_GLOB="${SPOOLR_CARD_GLOB:-/Volumes/*}"
 
 mkdir -p "$CFG_DIR" "$WATERMARKS_DIR"
-touch "$CONF_FILE" "$CARDS_REGISTRY" "$LEDGER" "$BACKUP_INDEX"
+# Create-if-missing, never `touch`: touching bumped all four mtimes on EVERY
+# invocation, so anything watching them for changes (the dashboard's poll,
+# backups) saw the ledger "change" every few seconds when nothing had.
+for _f in "$CONF_FILE" "$CARDS_REGISTRY" "$LEDGER" "$BACKUP_INDEX"; do [ -e "$_f" ] || : > "$_f"; done
 
 DEFAULT_STAGING="$HOME/Pictures/Spoolr"
 DEFAULT_VAULT=""

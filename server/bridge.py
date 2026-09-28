@@ -18,6 +18,7 @@ import socketserver
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +56,23 @@ def resolve_spoolr_bin():
 BIN_SPOOLR = resolve_spoolr_bin()
 
 
+def cli_version():
+    """The installed CLI's own version, asked once. state.json's copy is only
+    as new as the last CLI action, so an upgrade showed the old number."""
+    if BIN_SPOOLR is None:
+        return ""
+    try:
+        r = subprocess.run([str(BIN_SPOOLR), "version"], capture_output=True, text=True,
+                           timeout=5, stdin=subprocess.DEVNULL)
+        m = re.search(r"v(\d+\.\d+\.\d+)", r.stdout or "")
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
+
+
+CLI_VERSION = cli_version()
+
+
 def parse_tsv(file_path):
     if not file_path.exists():
         return []
@@ -85,6 +103,81 @@ def session_scan(staging_path):
         except OSError:
             pass
     return raws, jpgs, backed
+
+
+# ── Change-keyed caches ───────────────────────────────────────────────────────
+# The dashboard polls every 4 s. `spoolr where` (~0.6 s of CPU) used to run on
+# every poll, answering the same question again and again: about a sixth of a
+# CPU core, continuously, for as long as the page was open. Each is now recomputed only when something
+# it depends on has changed, and at least once a minute regardless. Any action
+# clears them, since an action is exactly when the answers move.
+_CACHE = {}
+_CACHE_LOCK = threading.Lock()
+
+
+def _mtime(p):
+    try:
+        return os.stat(p).st_mtime_ns
+    except OSError:
+        return 0
+
+
+def _fsig(p):
+    """Content signature of a small file (ledger, index, config): mtime alone
+    moves whenever anything touches the file, even when nothing changed."""
+    try:
+        data = Path(p).read_bytes()
+    except OSError:
+        return None
+    import zlib
+    return (len(data), zlib.crc32(data))
+
+
+def _volumes_sig():
+    try:
+        return tuple(sorted(os.listdir("/Volumes")))
+    except OSError:
+        return ()
+
+
+def _dir_sig(path):
+    """Moves when a file is added, removed or renamed (the folder's mtime) or
+    when any file's metadata changes (ctime; Finder tags are xattrs, and
+    writing one bumps ctime). A few ms even for a 250-frame session."""
+    p = Path(path or "")
+    try:
+        st = p.stat()
+    except OSError:
+        return None
+    n = total = 0
+    try:
+        with os.scandir(p) as it:
+            for e in it:
+                try:
+                    total += e.stat(follow_symlinks=False).st_ctime_ns
+                    n += 1
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return (st.st_mtime_ns, n, total)
+
+
+def cached(name, key, fn):
+    key = (key, int(time.time() // 60))          # never more than a minute stale
+    with _CACHE_LOCK:
+        hit = _CACHE.get(name)
+        if hit and hit[0] == key:
+            return hit[1]
+    val = fn()
+    with _CACHE_LOCK:
+        _CACHE[name] = (key, val)
+    return val
+
+
+def invalidate_caches():
+    with _CACHE_LOCK:
+        _CACHE.clear()
 
 
 def _run_json(args, default):
@@ -244,6 +337,8 @@ def get_full_state():
                 state.update(json.load(f))
         except Exception:
             pass
+    if CLI_VERSION:
+        state["version"] = CLI_VERSION
     # Which card that snapshot describes — captured BEFORE the live probe below
     # overwrites card_id, so we can tell whether its verdict applies to the card
     # actually in the reader.
@@ -283,7 +378,10 @@ def get_full_state():
     ledger_rows = parse_tsv(CONFIG_DIR / "ledger.tsv")
     colors = card_colors()
     backed_at = backup_times()
-    where = where_map()
+    where_key = (_fsig(CONFIG_DIR / "ledger.tsv"), _fsig(CONFIG_DIR / "backups.tsv"),
+                 _fsig(CONFIG_DIR / "config.conf"), _volumes_sig(),
+                 tuple(_mtime(r[5]) for r in ledger_rows if len(r) >= 6))
+    where = cached("where", where_key, where_map)
     sessions = []
     for r in reversed(ledger_rows):
         if len(r) >= 6 and r[1].startswith("SES-"):
@@ -566,6 +664,7 @@ class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
             output = (result.stdout or b"").decode("utf-8", "replace") \
                    + (result.stderr or b"").decode("utf-8", "replace")
             success = result.returncode == 0
+            invalidate_caches()
         except subprocess.TimeoutExpired:
             output, success = "Action timed out after 10 minutes.", False
         except Exception as exc:  # pragma: no cover
