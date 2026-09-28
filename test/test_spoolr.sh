@@ -126,6 +126,52 @@ FS=$(ls -dt "$HOME/Pictures/Spoolr"/*_SES-* | head -1)
 ck "fast pull staged the frame with a manifest hash" '[ -n "$(awk -F"\t" "NR==1&&\$3!=\"\"{print 1}" "$FS/.spoolr_manifest.tsv" 2>/dev/null)" ]'
 rm -rf "$NC2" "$FS"; mv "$ROOT/parked" "$CARD"
 
+say "watermark: a burst inside one second is never pulled twice"
+# Three frames in the SAME second, differing only in nanoseconds, with the
+# newest listed last by find. Second-resolution comparison crowned the first
+# one listed, so the next spool re-pulled the other two as "new".
+NC3="$ROOT/volumes/BURST"; mkdir -p "$NC3/DCIM/1"; echo BURST > "$NC3/.card_id"
+mv "$CARD" "$ROOT/parkedW"
+for n in 1 2 3; do head -c 5000 /dev/urandom > "$NC3/DCIM/1/B$n.RW2"; done
+i=0; T=1790000000
+find "$NC3/DCIM/1" -name '*.RW2' | while IFS= read -r f; do
+  i=$((i+1)); python3 -c "import os,sys; os.utime(sys.argv[1], ns=(int(sys.argv[2]), int(sys.argv[2])))" "$f" "$((T * 1000000000 + i * 100000000))"
+done
+"$ING" spool --baseline=all >/dev/null 2>&1
+ck "no pulled frame is newer than the watermark" '[ -z "$(find "$NC3/DCIM" -name "*.RW2" -newer "$SPOOLR_CONFIG_DIR/watermarks/BURST.watermark")" ]'
+ck "probe reports 0 new frames right after the pull" '"$ING" probe | grep -q "\"new_frames\": 0"'
+rm -rf "$NC3" "$(sess)"; mv "$ROOT/parkedW" "$CARD"
+
+say "spoolr <slug>: a bare word names the session; a near-miss of a command never pulls"
+NC4="$ROOT/volumes/SLUG"; mkdir -p "$NC4/DCIM/1"; echo SLUG > "$NC4/.card_id"
+mv "$CARD" "$ROOT/parkedS"
+head -c 6000 /dev/urandom > "$NC4/DCIM/1/S1.RW2"
+N0="$(grep -c "	SES-" "$SPOOLR_CONFIG_DIR/ledger.tsv")"
+OUT="$("$ING" reconcle 2>&1)"; rc=$?
+ck "a typo of a command is refused with a suggestion" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "Did you mean: spoolr reconcile"'
+ck "…and nothing was pulled" '[ "$(grep -c "	SES-" "$SPOOLR_CONFIG_DIR/ledger.tsv")" = "$N0" ]'
+OUT="$("$ING" bogus --help 2>&1)"
+ck "an unknown word with more arguments still shows help" 'echo "$OUT" | grep -q "Usage:"'
+"$ING" street --baseline=all >/dev/null 2>&1
+ck "spoolr street pulls into a *_street session" '[ -n "$(ls -d "$HOME/Pictures/Spoolr"/*_SES-*_street 2>/dev/null)" ]'
+rm -rf "$NC4" "$HOME/Pictures/Spoolr"/*_street; mv "$ROOT/parkedS" "$CARD"
+
+say "keepers come from the files' own Finder tags, not Spotlight"
+# $TMPDIR is never indexed by Spotlight, so the old mdfind query found no tags
+# here at all. A keeper list that is silently short is how reconcile says SAFE
+# while one keeper exists only in staging.
+KD="$ROOT/keepertest"; mkdir -p "$KD"
+for n in 1 2 3; do head -c 100 /dev/urandom > "$KD/K$n.RW2"; : > "$KD/K$n.jpg"; printf 'K%s.RW2\t100\tx\tC\tS\t/x\tPENDING\n' "$n" >> "$KD/.spoolr_manifest.tsv"; done
+ktag(){ osascript -l JavaScript -e "ObjC.import('Foundation'); \$.NSURL.fileURLWithPath('$1').setResourceValueForKeyError(\$(['$2'].filter(String)), \$.NSURLTagNamesKey, null)" >/dev/null 2>&1; }
+keepers(){ SPOOLR_LIB=1 bash -c '. "$1"; session_keepers "$2"' _ "$ING" "$KD" | tr '\n' ' '; }
+ktag "$KD/K2.jpg" Green
+ck "exactly the tagged frame is a keeper" '[ "$(keepers)" = "K2 " ]'
+ktag "$KD/K3.RW2" Purple
+ck "a tag on the RAW itself counts too" '[ "$(keepers)" = "K2 K3 " ]'
+ktag "$KD/K2.jpg" ""; ktag "$KD/K3.RW2" ""
+ck "an emptied tag list is untagged (every frame is a keeper again)" '[ "$(keepers)" = "K1 K2 K3 " ]'
+rm -rf "$KD"
+
 say "session ids never collide, even past a foreign ledger row"
 # `reset` preserves rows this tool did not write. One landing last used to make
 # the next id restart at SES-001 — and a duplicate id would hand a restore the

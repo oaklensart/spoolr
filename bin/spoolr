@@ -70,6 +70,15 @@ find_raws() {
   find "$dir" "$@" -type f ! -name '._*' \( "${expr[@]}" \) -print0
 }
 
+# Newest of some files by FULL-precision mtime (NUL-delimited paths on stdin).
+# Not `[[ a -nt b ]]`: bash 3.2 compares whole seconds, so inside a burst
+# (several frames per second, and exFAT keeps 10 ms) it could crown a frame that
+# is not the newest. The watermark then sat below frames already pulled, and the
+# next spool pulled them AGAIN into a new session: duplicate RAWs.
+newest_file() {
+  xargs -0 stat -f '%Fm%t%N' 2>/dev/null | sort -t "	" -k1,1n | tail -1 | cut -f2-
+}
+
 # Is a filename (any case) a RAW we recognise?
 is_raw() {
   local ext="${1##*.}"; ext="$(printf '%s' "$ext" | tr '[:lower:]' '[:upper:]')"
@@ -632,22 +641,76 @@ manifest_mark_backed() { # $1 folder  $2 filename
   awk -F'\t' -v f="$2" 'BEGIN{OFS="\t"} $1==f{$7="BACKED"} 1' "$mp" > "$tmp" && mv "$tmp" "$mp"
 }
 
-# Vault path recorded for a given (session, filename), if any.
+# Vault path recorded for a given (session, filename), if any. The NEWEST row
+# wins: a frame archived twice (a re-run, or after moving to a new vault) has
+# two rows, and the newest says where it lives now. (restore_wanted already
+# treats the newest recorded hash as authoritative; this keeps the two in step.)
 vault_path_for() { # $1 session_id  $2 filename -> vault_path
-  awk -F'\t' -v s="$1" -v f="$2" '$1==s && $2==f{print $4; exit}' "$BACKUP_INDEX" 2>/dev/null
+  awk -F'\t' -v s="$1" -v f="$2" '$1==s && $2==f{v=$4} END{if (v != "") print v}' "$BACKUP_INDEX" 2>/dev/null
 }
 
-# List keeper basenames for a session folder: tagged JPEG previews map to their
-# RAW siblings; if no Finder tags are found, every RAW in the manifest is a keeper.
-session_keepers() { # $1 folder -> prints basenames (no extension), one per line
-  local folder="$1" tagged=()
-  if command -v mdfind &>/dev/null; then
-    while IFS= read -r j; do [ -n "$j" ] && tagged+=("$j"); done \
-      < <(mdfind -onlyin "$folder" 'kMDItemUserTags == "*"' 2>/dev/null | grep -iE '\.jpe?g$' || true)
+# ── Finder tags, read from the files themselves ──────────────────────────────
+# Spotlight (mdfind) answers from an index that can lag behind Finder by
+# minutes, or skip a folder entirely. A keeper list built from it can silently
+# come back SHORT — and a short keeper list is exactly how reconcile says SAFE
+# while one keeper exists only in staging. So tags are read from each file's
+# own xattr. The attribute can outlive its tags (removing the last tag in
+# Finder leaves an empty array behind), so every candidate is decoded, never
+# merely detected.
+TAG_XATTR="com.apple.metadata:_kMDItemUserTags"
+
+# Tag names on one file, one per line, colour index stripped ("Purple\n3" → Purple).
+# Returns 1 when the attribute exists but cannot be read or decoded.
+file_tags() {
+  local hex xml
+  hex="$(xattr -px "$TAG_XATTR" "$1" 2>/dev/null)" || return 1
+  xml="$(printf '%s' "$hex" | xxd -r -p 2>/dev/null | plutil -convert xml1 -o - - 2>/dev/null)" || return 1
+  printf '%s\n' "$xml" | sed -n 's/^[[:space:]]*<string>\([^<]*\).*/\1/p'
+}
+
+# Basenames (no extension) of the frames in a folder whose preview JPEG or RAW
+# carries a Finder tag — any tag, or only $2 when given. One `xattr` call lists
+# every file (~20 ms for 600) and only files that have the attribute at all are
+# decoded. The folder itself rides along as an argument so xattr prefixes every
+# line with its path even when there is a single file.
+# Fails SAFE: a file whose tags cannot be read counts as tagged. Keeping one
+# frame too many is recoverable; a keeper that reconcile never checks is not.
+tagged_bases() { # $1 folder  [$2 tag name] -> basenames, sorted, unique
+  local folder="$1" want="${2:-}" listing="" line f name t rc=0 names tags
+  [ -d "$folder" ] || return 0
+  listing="$(find "$folder" -maxdepth 1 -type f ! -name '.*' -exec xattr "$folder" {} + 2>/dev/null)" || rc=$?
+  if [ "$rc" != 0 ]; then
+    # Some file refused. Go one by one; an unreadable file is listed as tagged.
+    listing=""
+    while IFS= read -r -d '' f; do
+      if names="$(xattr "$f" 2>/dev/null)"; then
+        printf '%s\n' "$names" | grep -qxF "$TAG_XATTR" && listing="$listing$f: $TAG_XATTR"$'\n'
+      else
+        listing="$listing$f: $TAG_XATTR"$'\n'
+      fi
+    done < <(find "$folder" -maxdepth 1 -type f ! -name '.*' -print0 2>/dev/null)
   fi
+  printf '%s\n' "$listing" | while IFS= read -r line; do
+    case "$line" in *": $TAG_XATTR") ;; *) continue ;; esac
+    f="${line%": $TAG_XATTR"}"
+    [ -f "$f" ] || continue
+    name="${f##*/}"
+    case "$name" in *.[Jj][Pp][Gg]|*.[Jj][Pp][Ee][Gg]) ;; *) is_raw "$name" || continue ;; esac
+    if ! tags="$(file_tags "$f")"; then printf '%s\n' "${name%.*}"; continue; fi
+    while IFS= read -r t; do
+      [ -n "$t" ] || continue
+      if [ -z "$want" ] || [ "$t" = "$want" ]; then printf '%s\n' "${name%.*}"; break; fi
+    done <<< "$tags"
+  done | sort -u
+}
+
+# List keeper basenames for a session folder: tagged previews (or RAWs) name
+# their frames; if nothing at all is tagged, every RAW in the manifest is a keeper.
+session_keepers() { # $1 folder -> prints basenames (no extension), one per line
+  local folder="$1" tagged=() j
+  while IFS= read -r j; do [ -n "$j" ] && tagged+=("$j"); done < <(tagged_bases "$folder")
   if (( ${#tagged[@]} > 0 )); then
-    local j base
-    for j in "${tagged[@]}"; do base="$(basename "$j")"; printf '%s\n' "${base%.*}"; done | sort -u
+    printf '%s\n' "${tagged[@]}"
   else
     # all RAWs in manifest
     awk -F'\t' 'NF>=1{print $1}' "$(manifest_path "$folder")" 2>/dev/null | while IFS= read -r fn; do
@@ -703,10 +766,8 @@ run_spool() {
     fi
     case "$base_choice" in
       1)
-        local newest="" f
-        while IFS= read -r -d '' f; do
-          [[ -z "$newest" || "$f" -nt "$newest" ]] && newest="$f"
-        done < <(find_raws "$CARD/DCIM")
+        local newest
+        newest="$(find_raws "$CARD/DCIM" | newest_file)"
         if [[ -n "$newest" ]]; then touch -r "$newest" "$MARKER"; else touch "$MARKER"; fi
         ok "Baselined — 0 pulled now; future shoots will be captured."
         export_state_json "idle"
@@ -733,10 +794,7 @@ run_spool() {
       # nothing. Saying "nothing new since last spool" here would be false —
       # there has never been a spool of this card — and it hides the fact that
       # the frames are sitting right there, excluded by the chosen starting line.
-      newest_f=""
-      while IFS= read -r -d '' f; do
-        [[ -z "$newest_f" || "$f" -nt "$newest_f" ]] && newest_f="$f"
-      done < <(find_raws "$CARD/DCIM")
+      newest_f="$(find_raws "$CARD/DCIM" | newest_file)"
       newest_d=$(stat -f '%Sm' -t '%Y-%m-%d' "$newest_f" 2>/dev/null || echo "?")
       warn "0 of $on_card frame(s) on CARD $CARD_ID matched \"${REF_DESC}\"."
       echo -e "  ${GRAY}The newest frame on this card is from ${BOLD}$newest_d${NC}${GRAY}, so that starting line excluded them all.${NC}"
@@ -804,11 +862,10 @@ run_spool() {
   # Advance watermark only in rolling mode, anchored to the newest file we
   # actually copied and verified (never past a frame we failed to offload).
   if [[ "$MODE" == "rolling" ]]; then
-    local newest=""
-    for f in "${NEW[@]}"; do
-      [ -f "$CURRENT_SESSION_DIR/$(basename "$f")" ] || continue
-      [[ -z "$newest" || "$f" -nt "$newest" ]] && newest="$f"
-    done
+    local newest
+    newest="$(for f in "${NEW[@]}"; do
+                [ -f "$CURRENT_SESSION_DIR/$(basename "$f")" ] && printf '%s\0' "$f"
+              done | newest_file)"
     if [ -n "$newest" ]; then touch -r "$newest" "$MARKER"; ok "Watermark advanced → $(basename "$newest")"; fi
   fi
 
@@ -1648,7 +1705,7 @@ run_doctor() {
   command -v rsync    &>/dev/null; check "rsync (verified copy)" $? "— required"
   command -v exiftool &>/dev/null; check "exiftool (previews + dates)" $? "— recommended: brew install exiftool"
   command -v sips     &>/dev/null; check "sips (fallback previews)" $? "— macOS built-in"
-  command -v mdfind   &>/dev/null; check "mdfind (Finder tag detection)" $? "— macOS Spotlight"
+  command -v xattr &>/dev/null && command -v plutil &>/dev/null; check "xattr + plutil (Finder tags)" $? "— macOS built-in; read from the files, not Spotlight"
   command -v diskutil &>/dev/null; check "diskutil (safe eject)" $? "— macOS built-in"
   echo ""
   echo -e "  Config dir : ${BOLD}$CFG_DIR${NC}"
@@ -1789,6 +1846,34 @@ EOF
 # ═══════════════════════════════════════════════════════════════
 # 12. CLI DISPATCHER
 # ═══════════════════════════════════════════════════════════════
+# Every word the dispatcher knows. `spoolr <slug>` treats any OTHER single word
+# as a session slug, so this list is what stops a typo from starting a pull.
+KNOWN_COMMANDS="spool today name rename tag reveal open status backup stash reconcile restore redownload peel eject doctor probe volumes where set-vault reset version config ui help"
+
+# The known command closest to $1 (case-insensitive Levenshtein), printed only
+# when it is close enough to be a typo: distance 1 for short words, 2 for
+# words of five letters or more. `spoolr reconcle` must never quietly become a
+# pull into a session named "reconcle".
+near_command() {
+  printf '%s\n' $KNOWN_COMMANDS | awk -v w="$1" '
+    function lev(a, b,   i, j, la, lb, c, d, x, y, z) {
+      la = length(a); lb = length(b)
+      for (j = 0; j <= lb; j++) d[0, j] = j
+      for (i = 1; i <= la; i++) {
+        d[i, 0] = i
+        for (j = 1; j <= lb; j++) {
+          c = (substr(a, i, 1) == substr(b, j, 1)) ? 0 : 1
+          x = d[i-1, j] + 1; y = d[i, j-1] + 1; z = d[i-1, j-1] + c
+          d[i, j] = (x < y ? (x < z ? x : z) : (y < z ? y : z))
+        }
+      }
+      return d[la, lb]
+    }
+    BEGIN { w = tolower(w); best = 99 }
+    { k = lev(w, $1); if (k < best) { best = k; name = $1 } }
+    END { lim = (length(w) >= 5) ? 2 : 1; if (best <= lim) print name }'
+}
+
 main() {
   # Extract global flags (--fast) so they can appear anywhere.
   FAST=0; BASELINE=""
@@ -1855,7 +1940,7 @@ main() {
       else
         die "Dashboard server (bridge.py) not found. Looked in: ${candidates[*]}"
       fi ;;
-    help|--help|-h|*)
+    help|--help|-h)
       echo -e "${BOLD}SPOOLR${NC} v$VERSION — Card Memory & Local Archival Engine"
       echo ""
       echo "Usage:"
@@ -1877,6 +1962,22 @@ main() {
       echo "  spoolr reset [--all] [--purge-staging]   Clear tracking data (photos on cards/vault untouched)"
       echo "  spoolr ui                     Launch interactive Bento Box dashboard (localhost:7331)"
       ;;
+    *)
+      # `spoolr <slug>`: the README's rolling pull into a named session
+      # (2026-08-25_SES-019_street). Only a single, slug-shaped word qualifies;
+      # anything with more arguments (e.g. `spoolr bogus --help`) or a near-miss
+      # of a real command gets help or a "did you mean", never a pull.
+      local near=""
+      if [ "$#" -eq 1 ] && [[ "$CMD" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+        near="$(near_command "$CMD")"
+        if [ -n "$near" ]; then
+          die "Unknown command '$CMD'. Did you mean: spoolr $near
+     To name a session '$CMD' instead: spoolr spool $CMD"
+        fi
+        run_spool "rolling" "$CMD"
+      else
+        main help
+      fi ;;
   esac
 }
 
