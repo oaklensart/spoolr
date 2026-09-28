@@ -152,6 +152,7 @@ ck "a typo of a command is refused with a suggestion" '[ "$rc" != 0 ] && echo "$
 ck "…and nothing was pulled" '[ "$(grep -c "	SES-" "$SPOOLR_CONFIG_DIR/ledger.tsv")" = "$N0" ]'
 OUT="$("$ING" bogus --help 2>&1)"
 ck "an unknown word with more arguments still shows help" 'echo "$OUT" | grep -q "Usage:"'
+ck "the typo guard: near-misses caught, ordinary slugs left alone" '[ "$(SPOOLR_LIB=1 bash -c ". \"\$1\"; near_command reconcle; near_command recocnile; near_command street; near_command stated" _ "$ING" | tr "\n" " ")" = "reconcile reconcile " ]'
 "$ING" street --baseline=all >/dev/null 2>&1
 ck "spoolr street pulls into a *_street session" '[ -n "$(ls -d "$HOME/Pictures/Spoolr"/*_SES-*_street 2>/dev/null)" ]'
 rm -rf "$NC4" "$HOME/Pictures/Spoolr"/*_street; mv "$ROOT/parkedS" "$CARD"

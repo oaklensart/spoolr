@@ -1876,8 +1876,8 @@ EOF
 KNOWN_COMMANDS="spool today name rename tag reveal open status backup stash reconcile restore redownload peel eject doctor probe volumes where set-vault reset version config ui help"
 
 # The known command closest to $1 (case-insensitive Levenshtein), printed only
-# when it is close enough to be a typo: distance 1 for short words, 2 for
-# words of five letters or more. `spoolr reconcle` must never quietly become a
+# when it is close enough to be a typo: distance 1, or 2 for words of eight
+# letters or more. Five was too loose: "street" sits 2 from "sheet". `spoolr reconcle` must never quietly become a
 # pull into a session named "reconcle".
 near_command() {
   printf '%s\n' $KNOWN_COMMANDS | awk -v w="$1" '
@@ -1896,7 +1896,7 @@ near_command() {
     }
     BEGIN { w = tolower(w); best = 99 }
     { k = lev(w, $1); if (k < best) { best = k; name = $1 } }
-    END { lim = (length(w) >= 5) ? 2 : 1; if (best <= lim) print name }'
+    END { lim = (length(w) >= 8) ? 2 : 1; if (best <= lim) print name }'
 }
 
 main() {
