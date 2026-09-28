@@ -156,6 +156,32 @@ ck "an unknown word with more arguments still shows help" 'echo "$OUT" | grep -q
 ck "spoolr street pulls into a *_street session" '[ -n "$(ls -d "$HOME/Pictures/Spoolr"/*_SES-*_street 2>/dev/null)" ]'
 rm -rf "$NC4" "$HOME/Pictures/Spoolr"/*_street; mv "$ROOT/parkedS" "$CARD"
 
+say "--date pulls one shoot day again, and never moves the watermark"
+# The recovery case: a shoot whose staging was lost, or one a first-run baseline
+# skipped, sits BEHIND the watermark. --date is the only way back to it.
+NC5="$ROOT/volumes/DAYS"; mkdir -p "$NC5/DCIM/1"; echo DAYS > "$NC5/.card_id"
+mv "$CARD" "$ROOT/parkedD"
+setday(){ python3 -c "import os,sys,time; t=time.mktime(time.strptime(sys.argv[2],'%Y-%m-%d %H:%M:%S')); os.utime(sys.argv[1],(t,t))" "$NC5/DCIM/1/$1" "$2"; }
+for f in A1 A2 B1 B2 B3 C1; do head -c 4000 /dev/urandom > "$NC5/DCIM/1/$f.RW2"; done
+setday A1.RW2 "2026-08-27 00:00:00"; setday A2.RW2 "2026-08-27 23:59:30"
+setday B1.RW2 "2026-09-17 10:00:00"; setday B2.RW2 "2026-09-17 11:00:00"; setday B3.RW2 "2026-09-17 12:00:00"
+setday C1.RW2 "2026-09-18 00:00:01"
+"$ING" --baseline=all >/dev/null 2>&1                        # everything pulled; watermark at C1
+WM5="$SPOOLR_CONFIG_DIR/watermarks/DAYS.watermark"; WMT="$(stat -f %Fm "$WM5")"
+"$ING" --date=2026-09-17 again >/dev/null 2>&1
+DS="$(ls -d "$HOME/Pictures/Spoolr"/*_SES-*_again 2>/dev/null | head -1)"
+ck "exactly that day's 3 frames were pulled" '[ -n "$DS" ] && [ "$(ls "$DS"/*.RW2 | wc -l | tr -d " ")" = 3 ] && [ -f "$DS/B1.RW2" ] && [ ! -f "$DS/C1.RW2" ]'
+ck "the watermark did not move" '[ "$(stat -f %Fm "$WM5")" = "$WMT" ]'
+"$ING" --date 2026-08-27 edges >/dev/null 2>&1
+ck "first and last second of the day are both included (--date DAY form)" '[ "$(ls "$HOME/Pictures/Spoolr"/*_SES-*_edges/*.RW2 2>/dev/null | wc -l | tr -d " ")" = 2 ]'
+OUT="$("$ING" --date=2026-02-30 2>&1)"; rc=$?
+ck "an impossible date is refused" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "needs a real day"'
+OUT="$("$ING" spool --date 2>&1)"; rc=$?
+ck "a bare --date is refused, never a rolling pull" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "needs a day"'
+OUT="$("$ING" --date=2026-07-01 2>&1)"
+ck "a day with no frames says so and pulls nothing" 'echo "$OUT" | grep -q "No frames shot on 2026-07-01"'
+rm -rf "$NC5" "$HOME/Pictures/Spoolr"/*_again "$HOME/Pictures/Spoolr"/*_edges "$(sess)"; mv "$ROOT/parkedD" "$CARD"
+
 say "reconcile records VERIFIED on every session it checked, not just one"
 NC6="$ROOT/volumes/MULTI"; mkdir -p "$NC6/DCIM/1"; echo MULTI > "$NC6/.card_id"
 mv "$CARD" "$ROOT/parkedM"

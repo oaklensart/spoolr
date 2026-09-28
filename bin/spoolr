@@ -12,6 +12,7 @@
 # Commands:
 #   spoolr [slug]                 Rolling offload into a new isolated session folder
 #   spoolr --today [slug]         Offload only today's frames (preserves watermark)
+#   spoolr --date=YYYY-MM-DD      Offload one shoot day again (preserves watermark)
 #   spoolr status                 Read-only card identity, fill gauge & frame headroom
 #   spoolr backup [vault_path]    Archive session keepers to local vault (read-back SHA256)
 #   spoolr reconcile [folder]     Pre-wipe verification (Safe to Format check)
@@ -736,8 +737,25 @@ run_spool() {
   # back with nothing, this is the difference between "you are up to date" and
   # "the starting line you picked excluded every frame on the card" — which look
   # identical from the outside and are not remotely the same thing.
-  local REF="" REF_DESC="" FIRST_RUN=0
-  if [[ "$MODE" == "today" ]]; then
+  local REF="" REF_DESC="" FIRST_RUN=0 UNTIL=""
+  # --date=YYYY-MM-DD: one shoot day, start to end, and like --today the
+  # watermark never moves. This is how frames the watermark has already passed
+  # get pulled again: a shoot whose staging was lost, or one a baseline skipped.
+  if [ -n "${SPOOL_DATE:-}" ]; then
+    [[ "$MODE" == "rolling" ]] || die "--date and --today can't be combined."
+    # Round-trip it: BSD date quietly rolls 2026-02-30 over to 03-02.
+    [ "$(date -j -f '%Y-%m-%d' "$SPOOL_DATE" +%Y-%m-%d 2>/dev/null)" = "$SPOOL_DATE" ] \
+      || die "--date needs a real day as YYYY-MM-DD (got '$SPOOL_DATE')."
+    MODE="date"
+  fi
+  if [[ "$MODE" == "date" ]]; then
+    # -newer is strict, so the start mark sits one second before midnight.
+    REF="$(mktemp_tracked)"
+    touch -t "$(date -j -v-1S -f '%Y-%m-%d %H:%M:%S' "$SPOOL_DATE 00:00:00" +%Y%m%d%H%M.%S)" "$REF"
+    UNTIL="$(mktemp_tracked)"
+    touch -t "$(date -j -v+1d -f '%Y-%m-%d' "$SPOOL_DATE" +%Y%m%d)0000" "$UNTIL"
+    REF_DESC="shot on $SPOOL_DATE"
+  elif [[ "$MODE" == "today" ]]; then
     REF="$(mktemp_tracked)"; touch -t "$(date +%Y%m%d)0000" "$REF"
     REF_DESC="shot today (since midnight)"
   elif [[ -e "$MARKER" ]]; then
@@ -781,7 +799,8 @@ run_spool() {
 
   # Gather new RAW files
   local NEW=()
-  while IFS= read -r -d '' f; do NEW+=("$f"); done < <(find_raws "$CARD/DCIM" -newer "$REF")
+  local window=(); [ -n "$UNTIL" ] && window=(! -newer "$UNTIL")
+  while IFS= read -r -d '' f; do NEW+=("$f"); done < <(find_raws "$CARD/DCIM" -newer "$REF" ${window[@]+"${window[@]}"})
 
   if (( ${#NEW[@]} == 0 )); then
     local on_card newest_f newest_d
@@ -789,6 +808,8 @@ run_spool() {
     echo ""
     if (( on_card == 0 )); then
       echo -e "  ${GRAY}No RAW frames on CARD $CARD_ID at all.${NC}"
+    elif [[ "$MODE" == "date" ]]; then
+      echo -e "  ${GRAY}No frames ${REF_DESC} on CARD $CARD_ID ($on_card frame(s) on the card). Nothing was spooled.${NC}"
     elif (( FIRST_RUN == 1 )); then
       # The trap this message exists for: a first spool whose baseline matched
       # nothing. Saying "nothing new since last spool" here would be false —
@@ -1880,15 +1901,19 @@ near_command() {
 
 main() {
   # Extract global flags (--fast) so they can appear anywhere.
-  FAST=0; BASELINE=""
-  local args=() a
+  FAST=0; BASELINE=""; SPOOL_DATE=""
+  local args=() a want_date=0
   for a in "$@"; do
+    if [ "$want_date" = 1 ]; then SPOOL_DATE="$a"; want_date=0; continue; fi
     case "$a" in
       --fast) FAST=1 ;;
       --baseline=*) BASELINE="${a#--baseline=}" ;;
+      --date=*) SPOOL_DATE="${a#--date=}" ;;
+      --date) want_date=1 ;;
       *) args+=("$a") ;;
     esac
   done
+  [ "$want_date" = 0 ] || die "--date needs a day: spoolr --date YYYY-MM-DD [slug]"
   set -- "${args[@]:-}"
 
   local CMD="${1:-spool}"
@@ -1951,6 +1976,7 @@ main() {
       echo "  spoolr [slug]                 Rolling offload into a new isolated session directory"
       echo "  spoolr --fast [slug]          Offload ~2× faster (skips the copy-time card re-read)"
       echo "  spoolr --today [slug]         Offload only today's frames (preserves rolling watermark)"
+      echo "  spoolr --date=YYYY-MM-DD [slug]  Offload one shoot day again (preserves rolling watermark)"
       echo "  spoolr name <NAME>            Set or rename the inserted card's permanent identity"
       echo "  spoolr reveal                 Open the latest session folder in Finder (to tag keepers)"
       echo "  spoolr status                 Read-only card fill gauge, headroom & run history"
