@@ -442,6 +442,14 @@
       border-top: 1px solid var(--border-dim); padding-top: 0.55rem; margin-top: -0.5rem;
     }
     .ses-loc.safe { color: var(--ok); }
+    /* Contact sheet thumbnail: the session's archived keepers at a glance. */
+    .ses-sheet { display: block; margin: -0.3rem 0 -0.2rem; }
+    /* Capped so a 45-frame sheet doesn't stretch its whole ledger row; the top
+       rows are enough to recognise a session, and a click opens it full size. */
+    .ses-sheet img { display: block; width: 100%; height: auto; max-height: 150px;
+      object-fit: cover; object-position: top; border-radius: 6px;
+      border: 1px solid var(--border-dim); background: #111; }
+    .ses-sheet:hover img { border-color: var(--border-bright); }
     .ses-loc.warn { color: var(--warn); }
     .ses-loc.lost { color: var(--danger); font-weight: 700; }
     .ses-loc .lg { font-size: 0.75rem; line-height: 1; }
@@ -1479,7 +1487,7 @@
       }
       cnt.textContent = list.length + ' session' + (list.length > 1 ? 's' : '');
       const sig = list.map(s => [s.id, s.status, s.backed, s.jpgs, s.raws, s.color, s.exists,
-                                 s.restore_src, s.place, s.vol_mounted].join('~')).join('|');
+                                 s.restore_src, s.place, s.vol_mounted, s.sheet_v].join('~')).join('|');
       if (root.dataset.sig === sig) return;      // nothing changed — keep the DOM
       root.dataset.sig = sig;
 
@@ -1529,7 +1537,12 @@
         const loc = LOC[s.place];
 
         c.innerHTML = `<div class="ses-head"><span class="ses-date">${esc((s.date || '').split(',')[0])}</span><span class="ses-card-tag">${esc(s.card || '—')}</span></div>
-          <div class="ses-data">${esc(String(s.frames))} <small>RAWs</small></div>
+          <div class="ses-data">${esc(String(s.frames))} <small>RAWs</small></div>` +
+          // The session's contact sheet: what its archived keepers look like.
+          (+s.sheet_v ? `<a class="ses-sheet" href="/api/sheet/${esc(s.id)}?v=${+s.sheet_v}" target="_blank" rel="noopener"
+               title="Open the contact sheet full size (find a frame with: spoolr where ${esc(s.id)}#N)">
+             <img src="/api/sheet/${esc(s.id)}?thumb=1&v=${+s.sheet_v}" loading="lazy" decoding="async" alt="Contact sheet of ${esc(s.id)}'s keepers"></a>` : '') +
+          `
           <div class="ses-foot"><span class="chip" style="color:${rawsGone ? 'var(--danger)' : col}"><span class="cd" style="background:${rawsGone ? 'var(--danger)' : col}"></span>${rawsGone ? '⚠ UNVERIFIED' : txt}</span>
           <span class="ses-meta">${esc(s.id)} · ${foot}</span></div>` +
           (loc ? `<div class="ses-loc ${loc[2]}"><span class="lg">${loc[0]}</span>${esc(loc[1])}</div>` : '');
@@ -1539,6 +1552,8 @@
           : gone ? (s.path || '') + ' — folder no longer at this path'
           : 'Open ' + (s.live_path || s.path || '') + ' in Finder';
         c.onclick = () => openSession(s);
+        const sheetLink = c.querySelector('.ses-sheet');
+        if (sheetLink) sheetLink.onclick = e => e.stopPropagation();   // opens the sheet, not Finder
         if (recoverable) {
           const b = document.createElement('button');
           b.className = 'recover';

@@ -412,6 +412,75 @@ else
   echo "  NOTE: external-volume cases skipped (hdiutil disk image unavailable here)"
 fi
 
+say "CONTACT SHEETS (local vault): backup writes one, in the session and the vault"
+if command -v magick >/dev/null 2>&1 && [ -f /System/Library/Fonts/Menlo.ttc ]; then
+  CS_CARD="$ROOT/volumes/SHEETS"; mkdir -p "$CS_CARD/DCIM/1"; echo SHEETS > "$CS_CARD/.card_id"
+  mv "$CARD" "$ROOT/parkedS2"
+  for n in 1 2 3; do head -c $((40000 + n)) /dev/urandom > "$CS_CARD/DCIM/1/S$n.RW2"; done
+  "$ING" --baseline=all contact >/dev/null 2>&1   # not "sheets": one letter from the sheet command
+  CSD="$(sess)"; CSID="$(awk -F'\t' -v d="$CSD" '$6==d{print $2}' "$SPOOLR_CONFIG_DIR/ledger.tsv" | tail -1)"
+  n=0; for c in red green blue; do n=$((n+1)); magick -size 96x72 "xc:$c" "jpg:$CSD/S$n.jpg"; done
+  ktag "$CSD/S1.jpg" Green; ktag "$CSD/S3.jpg" Green
+  CSV="$ROOT/svault"; OUT="$("$ING" backup "$CSV" 2>&1)"; rc=$?
+  CSN="${CSID}_contact-sheet"; CSVD="$CSV/$(basename "$CSD")"
+  ck "backup succeeded and built the sheet" '[ "$rc" = 0 ] && [ -s "$CSD/$CSN.jpg" ] && [ -s "$CSD/$CSN.tsv" ]'
+  ck "a copy sits beside the keepers in the vault" '[ -s "$CSVD/$CSN.jpg" ] && [ -s "$CSVD/$CSN.tsv" ]'
+  ck "TSV: exactly the 2 keepers, numbered, with their vault paths" '[ "$(grep -vc "^#" "$CSD/$CSN.tsv")" = 2 ] && grep -q "^01	" "$CSD/$CSN.tsv" && grep -q "$CSVD/S3.RW2" "$CSD/$CSN.tsv"'
+  OUT="$("$ING" doctor 2>&1)"
+  ck "doctor lists ImageMagick as optional" 'echo "$OUT" | grep -q "ImageMagick (contact sheets)"'
+
+  say "CONTACT SHEETS: where SES#N names the file and where it lives"
+  N2="$(awk -F'\t' '!/^#/ && $3=="S3.RW2"{print $1+0}' "$CSD/$CSN.tsv")"
+  OUT="$("$ING" where "$CSID#$N2" 2>&1)"
+  ck "where SES#N prints the file and its vault path" 'echo "$OUT" | grep -q "S3.RW2" && echo "$OUT" | grep -q "$CSVD/S3.RW2"'
+  OUT="$("$ING" where --json "$CSID#$N2" 2>&1)"
+  ck "…and as JSON, present" 'echo "$OUT" | grep -q "\"state\":\"present\""'
+  OUT="$("$ING" where "$CSID#9" 2>&1)"; rc=$?
+  ck "a number not on the sheet is refused" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "has no #9"'
+
+  say "CONTACT SHEETS: rebuilt from the vault once the previews are gone"
+  mkdir -p "$ROOT/csjpg"; mv "$CSD"/S[0-9].jpg "$ROOT/csjpg/"
+  OUT="$("$ING" sheet "$CSID" --force 2>&1)"; rc=$?
+  ck "read both keepers back from the vault, verified" '[ "$rc" = 0 ] && echo "$OUT" | grep -q "2 read back from the vault"'
+  cp "$CSVD/S1.RW2" "$ROOT/S1.good"; echo x >> "$CSVD/S1.RW2"
+  OUT="$("$ING" sheet "$CSID" --force 2>&1)"; rc=$?
+  ck "a vault copy that fails its sha256 is reported, loudly" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "does NOT match"'
+  cp "$ROOT/S1.good" "$CSVD/S1.RW2"; mv "$ROOT/csjpg"/*.jpg "$CSD/"
+
+  say "CONTACT SHEETS: a frame archived twice is named, and reported"
+  S3SHA="$(awk -F'\t' -v s="$CSID" '$1==s && $2=="S3.RW2"{print $3; exit}' "$SPOOLR_CONFIG_DIR/backups.tsv")"
+  printf 'SES-777\tS3.RW2\t%s\t%s/elsewhere/S3.RW2\t2026-01-01T00:00:00Z\n' "$S3SHA" "$ROOT" >> "$SPOOLR_CONFIG_DIR/backups.tsv"
+  "$ING" sheet --all --force >/dev/null 2>&1
+  ck "the TSV lists the other archived copy" 'grep "	S3.RW2	" "$CSD/$CSN.tsv" | grep -q "elsewhere/S3.RW2"'
+  ck "sheet --all writes the duplicates report" 'grep -q "elsewhere/S3.RW2" "$SPOOLR_CONFIG_DIR/vault-duplicates.tsv"'
+  grep -v '^SES-777	' "$SPOOLR_CONFIG_DIR/backups.tsv" > "$ROOT/bk.t" && mv "$ROOT/bk.t" "$SPOOLR_CONFIG_DIR/backups.tsv"
+
+  say "CONTACT SHEETS: without ImageMagick nothing else changes"
+  head -c 40009 /dev/urandom > "$CS_CARD/DCIM/1/S9.RW2"
+  "$ING" nomagick >/dev/null 2>&1
+  NMD="$(sess)"; NMID="$(awk -F'\t' -v d="$NMD" '$6==d{print $2}' "$SPOOLR_CONFIG_DIR/ledger.tsv" | tail -1)"
+  OUT="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin "$ING" backup "$CSV" 2>&1)"; rc=$?
+  ck "backup still succeeds, with no sheet and no error" '[ "$rc" = 0 ] && [ ! -e "$NMD/${NMID}_contact-sheet.jpg" ] && ! echo "$OUT" | grep -qi "imagemagick"'
+  OUT="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin "$ING" sheet "$NMID" 2>&1)"; rc=$?
+  ck "spoolr sheet says what it needs" '[ "$rc" != 0 ] && echo "$OUT" | grep -q "brew install imagemagick"'
+
+  say "CONTACT SHEETS: the dashboard shows the session's sheet"
+  UIP2=7398
+  SPOOLR_UI_PORT=$UIP2 BROWSER=true SPOOLR_BIN="$ING" python3 "$(dirname "$ING")/../server/bridge.py" >/dev/null 2>&1 &
+  UIPID2=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s "http://127.0.0.1:$UIP2/api/state" >/dev/null 2>&1 && break; sleep 0.5; done
+  CSV_="$(curl -s "http://127.0.0.1:$UIP2/api/state" | python3 -c "import sys,json; print([s for s in json.load(sys.stdin)['ledger'] if s['id']=='$CSID'][0]['sheet_v'])" 2>/dev/null)"
+  ck "state carries the sheet's version" '[ -n "$CSV_" ] && [ "$CSV_" != 0 ]'
+  ck "GET /api/sheet/<SES> serves that exact sheet" '[ "$(curl -s -o "$ROOT/cs.jpg" -w "%{http_code} %{content_type}" "http://127.0.0.1:$UIP2/api/sheet/$CSID")" = "200 image/jpeg" ] && cmp -s "$ROOT/cs.jpg" "$CSD/$CSN.jpg"'
+  ck "…and a small thumbnail for the card" '[ "$(curl -s -o "$ROOT/cst.jpg" -w "%{http_code}" "http://127.0.0.1:$UIP2/api/sheet/$CSID?thumb=1")" = 200 ] && [ "$(sips -g pixelWidth "$ROOT/cst.jpg" | awk "/pixelWidth/{print \$2}")" -le 600 ]'
+  ck "an unknown session or a path-like id is a 404" '[ "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$UIP2/api/sheet/SES-999999")" = 404 ] && [ "$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$UIP2/api/sheet/..%2F..%2Fetc")" = 404 ]'
+  kill "$UIPID2" 2>/dev/null; wait "$UIPID2" 2>/dev/null
+
+  rm -rf "$CS_CARD"; mv "$ROOT/parkedS2" "$CARD"
+else
+  echo "  NOTE: contact-sheet cases skipped (ImageMagick or Menlo not available)"
+fi
+
 say "reset clears tool data but preserves foreign config data"
 printf 'my cold storage index\n' > "$SPOOLR_CONFIG_DIR/coldstore.tsv"   # foreign file
 printf '2020-01-01\tAlpha\t2020-01-01\t9 frames\n' >> "$SPOOLR_CONFIG_DIR/ledger.tsv"  # foreign row

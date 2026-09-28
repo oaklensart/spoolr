@@ -99,6 +99,7 @@ def session_scan(staging_path):
         try:
             jpgs = sum(1 for f in p.iterdir()
                        if f.is_file() and not f.name.startswith("._")
+                       and "_contact-sheet" not in f.name
                        and f.suffix.lower() in (".jpg", ".jpeg"))
         except OSError:
             pass
@@ -178,6 +179,39 @@ def cached(name, key, fn):
 def invalidate_caches():
     with _CACHE_LOCK:
         _CACHE.clear()
+
+
+# Contact sheets, by session id, as found on the last state poll.
+# /api/sheet/<SES> serves only paths from this map, never one from the URL.
+SHEETS = {}
+
+
+def sheet_path(folder, sid):
+    """The session's contact sheet (first page when it has several), or None."""
+    p = Path(folder or "")
+    for name in (f"{sid}_contact-sheet.jpg", f"{sid}_contact-sheet-1.jpg"):
+        if (p / name).is_file():
+            return p / name
+    return None
+
+
+def sheet_thumb(sid, sheet):
+    """A 600 px-wide copy of a sheet in CONFIG_DIR/cache, rebuilt when the sheet
+    is newer. Overwritten in place, one file per session: nothing to clean up."""
+    cache = CONFIG_DIR / "cache" / "sheet-thumbs"
+    out = cache / f"{sid}.jpg"
+    try:
+        if out.is_file() and out.stat().st_mtime >= sheet.stat().st_mtime:
+            return out
+        cache.mkdir(parents=True, exist_ok=True)
+        tmp = cache / f".{sid}.tmp.jpg"
+        subprocess.run(["sips", "--resampleWidth", "600", "-s", "formatOptions", "70",
+                        str(sheet), "--out", str(tmp)], capture_output=True, timeout=20,
+                       stdin=subprocess.DEVNULL, check=True)
+        os.replace(tmp, out)
+        return out
+    except Exception:
+        return None
 
 
 def _run_json(args, default):
@@ -422,6 +456,8 @@ def get_full_state():
                 # Where a re-download would get its frame list, or "" if the
                 # session is unrecoverable. Drives the restore affordance.
                 "restore_src": restore_source(r[1], staging_path, backed_at),
+                # The contact sheet's mtime (cache key for the <img>), 0 if none.
+                "sheet_v": 0,
             })
 
     # The full history, every card, each wearing its own colour.
@@ -434,6 +470,19 @@ def get_full_state():
     cur = state.get("card_name") or ""
     mine = [s for s in sessions if s["card"] == cur] if state["card_present"] and cur else []
     state["sessions"] = mine[:12]
+
+    # Which sessions have a contact sheet right now.
+    found = {}
+    for s in sessions:
+        sp = sheet_path(s["live_path"], s["id"])
+        if sp:
+            found[s["id"]] = sp
+            try:
+                s["sheet_v"] = int(sp.stat().st_mtime)
+            except OSError:
+                pass
+    SHEETS.clear()
+    SHEETS.update(found)
 
     # last_backup is ALWAYS this card's own, never state.json's. That field is
     # the newest backup anywhere on the system, and state.json pairs it with the
@@ -497,6 +546,27 @@ class SpoolrHandler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/state":
             self._json(200, get_full_state())
+            return
+        if self.path.startswith("/api/sheet/"):
+            # A session's contact sheet. The id must look like one and
+            # be in the map built from OUR ledger; the URL never names a path.
+            sid = self.path[len("/api/sheet/"):].split("?", 1)[0].upper()
+            p = SHEETS.get(sid) if re.fullmatch(r"SES-\d{1,6}", sid) else None
+            if not p or not p.is_file():
+                self._json(404, {"error": "no contact sheet"})
+                return
+            if "thumb=1" in self.path:
+                # Cards show ~200 px of it: a 2520 px sheet decoded for that
+                # held tens of MB of GPU memory per card. Serve a 600 px copy,
+                # made once per sheet version with macOS `sips`, and fall back
+                # to the full sheet if that fails.
+                p = sheet_thumb(sid, p) or p
+            data = p.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "image/jpeg")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
             return
         if self.path == "/api/volumes":
             self._json(200, {"volumes": list_volumes()})

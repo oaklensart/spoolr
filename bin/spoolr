@@ -18,6 +18,7 @@
 #   spoolr reconcile [folder]     Pre-wipe verification (Safe to Format check)
 #   spoolr restore [SES-ID] [dir] Re-download a past session's keepers off the card
 #   spoolr where [SES-ID]         Where each session's frames are: staging/vault/both/neither
+#   spoolr sheet [SES-ID|--all]   Contact sheet of a session's keepers (optional: ImageMagick)
 #   spoolr peel [folder]          Extract embedded JPEG previews for Finder tagging
 #   spoolr eject                  Safely unmount active camera card
 #   spoolr config                 Interactive preferences (staging & vault paths)
@@ -1064,6 +1065,10 @@ run_backup() {
 
   echo ""
   ok "$count frame(s) archived & read-back-verified to ${BOLD}$DEST_VAULT${NC}"
+  # The session's contact sheet, when ImageMagick is installed (optional).
+  if [ "$SESS_ID" != "LOOSE" ] && (( ${#fail[@]} == 0 )) && sheets_available; then
+    sheet_one "$SESS_ID" 0 1 || warn "  Contact sheet had a problem (see above). The backup itself is fine."
+  fi
   echo -e "  ${GRAY}Next: run ${BOLD}spoolr reconcile${NC}${GRAY} for the pre-wipe verdict.${NC}\n"
   export_state_json "backed"
 }
@@ -1596,6 +1601,304 @@ run_volumes() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# 9d. CONTACT SHEETS — what a session's archived keepers look like
+# ═══════════════════════════════════════════════════════════════
+# One labelled, low-res picture of a session's keepers as archived: 6 across,
+# 400x300 cells, "11  2026-09-17_P1300620" under each (the frameid: capture
+# date + card filename, still unique after the camera's counter rolls over).
+# Saved in the session folder AND beside the keepers in the vault, with a TSV
+# that is the source of truth: n, frameid, file, sha256, vault path, other
+# archived copies of the same bytes, sheet page. The picture is for eyes,
+# human or AI; `spoolr where SES-012#11` reads the TSV. It outlives the preview
+# JPEGs: delete those and the sheet still shows what was kept and where.
+# Optional, like exiftool: it needs ImageMagick (brew install imagemagick).
+# Without it every other command works exactly as before.
+SHEET_COLS=6; SHEET_CELL="400x300"; SHEET_PER_PAGE=48
+SHEET_FONT="/System/Library/Fonts/Menlo.ttc"
+DUPES_REPORT="$CFG_DIR/vault-duplicates.tsv"
+
+sheet_name() { printf '%s_contact-sheet' "$1"; }
+sheets_available() { command -v magick &>/dev/null && [ -f "$SHEET_FONT" ]; }
+
+# Where a session's folder is now (follows its volume if it was remounted).
+sheet_session_dir() { # $1 session_id -> path ("" if the session is unknown)
+  local row l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest
+  row="$(awk -F'\t' -v s="$1" 'NF>=6 && $2==s {r=$0} END{print r}' "$LEDGER" 2>/dev/null)"
+  [ -n "$row" ] || return 0
+  IFS=$'\t' read -r l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest <<< "$row"
+  if vol_resolve "$(ledger_tag "${l_rest:-}" vol_uuid || true)" \
+                 "$(ledger_tag "${l_rest:-}" rel_path || true)" "$l_dir"; then
+    printf '%s' "$VOL_RESOLVED"
+  else
+    printf '%s' "$l_dir"
+  fi
+}
+
+# A session's archived keepers, ONE row per distinct frame (sha256), unsorted:
+#   frameid \t filename \t sha256 \t vault_path \t also (comma list)
+# "also" is every other archived path holding the same bytes: another
+# session's record in backups.tsv, or $COLDSTORE when a build sets one.
+# Empty fields are written as "-": bash `read` with a tab IFS treats tabs as
+# whitespace and silently drops an EMPTY leading field, shifting every column.
+sheet_rows() { # $1 session_id
+  awk -F'\t' -v s="$1" -v cs="${COLDSTORE:-}" '
+    BEGIN { if (cs != "") while ((getline l < cs) > 0) { split(l, c, "\t"); if (c[2] == "") continue
+              if (!(c[2] in fid)) fid[c[2]] = c[1]; loc[c[2]] = loc[c[2]] "\034" c[3] } }
+    $3 != "" && $4 != "" { loc[$3] = loc[$3] "\034" $4 }
+    $1 == s && $4 != "" { p[$2] = $4; h[$2] = $3 }
+    END { for (f in p) { sh = h[f]; if (sh in seen) continue; seen[sh] = 1
+            also = ""; n = split(loc[sh], L, "\034")
+            for (i = 1; i <= n; i++) if (L[i] != "" && L[i] != p[f] && index("," also ",", "," L[i] ",") == 0)
+              also = also (also == "" ? "" : ",") L[i]
+            print ((sh in fid) ? fid[sh] : "-") "\t" f "\t" sh "\t" p[f] "\t" (also == "" ? "-" : also) } }' "$BACKUP_INDEX" 2>/dev/null
+}
+
+# The biggest embedded JPEG in a RAW (a Lumix G85 carries one, 1920x1440).
+extract_preview() { # $1 raw  $2 out
+  local tag
+  for tag in JpgFromRaw PreviewImage OtherImage ThumbnailImage; do
+    exiftool -q -b -"$tag" "$1" > "$2" 2>/dev/null || true
+    [ -s "$2" ] && return 0
+  done
+  return 1
+}
+
+# YYYY-MM-DD_<base> from a file's EXIF capture date; empty when there is none.
+frameid_of() { # $1 file (RAW or JPEG)  $2 filename to name it by
+  local d; d="$(exiftool -q -m -fast2 -s3 -CreateDate -d '%Y-%m-%d' "$1" 2>/dev/null | head -1)"
+  [[ "$d" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && printf '%s_%s' "$d" "${2%.*}"
+  return 0
+}
+
+# Build (or confirm) one session's sheet. $2 force  $3 store in the vault (0/1)
+# Returns 1 only when an archived copy failed its sha256 check, or ImageMagick failed.
+SHEET_REBUILT=0
+sheet_one() {
+  local sid="$1" force="${2:-0}" store="${3:-1}"
+  local dir; dir="$(sheet_session_dir "$sid")"
+  [ -n "$dir" ] || { warn "  Unknown session: $sid"; return 0; }
+  local name; name="$(sheet_name "$sid")"
+  local rows; rows="$(mktemp_tracked)"; sheet_rows "$sid" > "$rows"
+  local total; total=$(grep -c . "$rows" || true)
+  echo ""
+  echo -e "${BOLD}SHEET${NC} ${GRAY}— $sid · $(basename "$dir")${NC}"
+  if (( total == 0 )); then warn "  Nothing of $sid is archived yet. Back it up first."; return 0; fi
+  local vdir; vdir="$(cut -f4 "$rows" | sed 's#[^/]*$##' | sort | uniq -c | sort -rn | awk 'NR==1{print $2}')"
+  local tsv="$dir/$name.tsv"
+
+  if (( ! force )) && [ -f "$tsv" ] && { [ -f "$dir/$name.jpg" ] || [ -f "$dir/$name-1.jpg" ]; } \
+     && [ "$(cut -f3 "$rows" | sort)" = "$(grep -v '^#' "$tsv" | cut -f4 | sort)" ]; then
+    ok "Up to date: $total keeper(s)"
+    (( store )) && sheet_store "$dir" "$name" "$vdir"
+    return 0
+  fi
+  # Each frame's picture: its preview JPEG if it is still in the session
+  # folder, otherwise the embedded JPEG of the archived RAW itself, read from
+  # the vault (and sha256-checked while we are at it). A vault that is not a
+  # local path is reached through vault_fetch, when a build defines one.
+  local items; items="$(mktemp_tracked)"
+  local fid fn sha vp also img base j raw bad=0 rebuilt=0 blank=0 unreach=0
+  while IFS=$'\t' read -r fid fn sha vp also; do
+    [ "$fid" = "-" ] && fid=""; [ "$also" = "-" ] && also=""
+    img=""; base="${fn%.*}"
+    for j in "$dir/$base.jpg" "$dir/$base.JPG" "$dir/$base.jpeg"; do
+      # Only a JPEG ImageMagick can actually read; one bad file must not sink the sheet.
+      [ -f "$j" ] && magick identify -ping "$j" >/dev/null 2>&1 && { img="$j"; break; }
+    done
+    if [ -z "$img" ]; then
+      raw=""
+      if [ -f "$vp" ]; then
+        raw="$vp"
+      elif declare -F vault_fetch >/dev/null; then
+        raw="$(mktemp_tracked)"; vault_fetch "$vp" "$raw" || raw=""
+      fi
+      if [ -z "$raw" ]; then
+        warn "  $fn: archived copy not reachable (vault not connected?). Shown as a blank cell."; blank=$((blank + 1)); unreach=$((unreach + 1))
+      elif [ "$(sha_file "$raw")" != "$sha" ]; then
+        err "$fn: the archived copy does NOT match its recorded sha256 ($vp)"; bad=$((bad + 1))
+      else
+        rebuilt=$((rebuilt + 1))
+        img="$(mktemp_tracked)"
+        extract_preview "$raw" "$img" || { img=""; blank=$((blank + 1)); }
+        [ -n "$fid" ] || fid="$(frameid_of "$raw" "$fn")"
+      fi
+      # A fetched copy is not kept; the tracked temp file goes at exit.
+      [ -n "$raw" ] && [ "$raw" != "$vp" ] && : > "${raw:?}"
+    fi
+    [ -n "$fid" ] || [ -z "$img" ] || fid="$(frameid_of "$img" "$fn")"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${fid:--}" "$fn" "$sha" "$vp" "${also:--}" "${img:--}" >> "$items"
+  done < "$rows"
+  SHEET_REBUILT=$((SHEET_REBUILT + rebuilt))
+  # Nothing reachable at all (a vault drive that isn't plugged in): a sheet of
+  # blank cells tells nobody anything, so don't write one, and don't recreate
+  # a session folder just to hold it.
+  if (( unreach == total )); then
+    warn "  None of $sid's keepers is reachable right now (vault not connected?). No sheet built."
+    return 0
+  fi
+  mkdir -p "$dir" || die "Cannot write to $dir"
+
+  # Capture order: by frameid (date, then card filename), filename as tiebreak.
+  local sorted; sorted="$(mktemp_tracked)"
+  awk -F'\t' '{k = ($1 != "-") ? $1 : "~" $2; print k "\t" $0}' "$items" | sort -t "	" -k1,1 -k3,3 | cut -f2- > "$sorted"
+  local pages=$(( (total + SHEET_PER_PAGE - 1) / SHEET_PER_PAGE ))
+  local shot; shot="$(awk -F'\t' -v s="$sid" '$2==s{v=$4} END{print v}' "$LEDGER")"
+
+  local ph="" i=0 pg=0 args=() lbl sheetf out tmpout title
+  local newtsv; newtsv="$(mktemp_tracked)"
+  { printf '# %s · %s · %d keeper(s) · shot %s · made %s\n' "$sid" "$(basename "$dir")" "$total" "$shot" "$(date +%Y-%m-%d)"
+    printf '# n\tframeid\tfile\tsha256\tvault_path\talso_archived_at\tsheet\n'; } > "$newtsv"
+  while IFS=$'\t' read -r fid fn sha vp also img; do
+    [ "$fid" = "-" ] && fid=""; [ "$also" = "-" ] && also=""; [ "$img" = "-" ] && img=""
+    i=$((i + 1)); pg=$(( (i - 1) / SHEET_PER_PAGE + 1 ))
+    if (( pages > 1 )); then sheetf="$name-$pg.jpg"; else sheetf="$name.jpg"; fi
+    printf '%02d\t%s\t%s\t%s\t%s\t%s\t%s\n' "$i" "${fid:--}" "$fn" "$sha" "$vp" "${also:--}" "$sheetf" >> "$newtsv"
+    if [ -z "$img" ]; then
+      if [ -z "$ph" ]; then
+        ph="$(mktemp_tracked)"
+        magick -size "$SHEET_CELL" xc:'#2a2a2a' -font "$SHEET_FONT" -pointsize 20 -fill '#888' \
+          -gravity center -annotate 0 'no preview' "jpg:$ph" 2>/dev/null
+      fi
+      img="$ph"
+    fi
+    lbl="$(printf '%02d  %s' "$i" "${fid:-${fn%.*}}")"
+    args+=(-label "$lbl" "jpg:$img")
+    if (( i % SHEET_PER_PAGE == 0 || i == total )); then
+      title="$sid · shot ${shot//,/, } · $total keeper(s)"
+      (( pages > 1 )) && title="$title · sheet $pg/$pages"
+      out="$dir/$sheetf"; tmpout="$(mktemp_tracked)"
+      if ! magick montage -font "$SHEET_FONT" -pointsize 22 -background '#111' -fill '#eee' -title "$title" \
+             "${args[@]}" -tile "${SHEET_COLS}x" -geometry "${SHEET_CELL}+10+10" -quality 80 "jpg:$tmpout" 2>/dev/null; then
+        err "ImageMagick could not build $sheetf"; return 1
+      fi
+      mv "$tmpout" "$out"; args=()
+    fi
+  done < "$sorted"
+  mv "$newtsv" "$tsv"
+
+  local kb; kb=$(cat "$dir/$name"*.jpg | wc -c | awk '{printf "%.0f", $1/1024}')
+  local how=""; (( rebuilt > 0 )) && how=" · $rebuilt read back from the vault (sha256-verified)"
+  ok "$name: $total keeper(s), $pages page(s), ${kb} KB$how"
+  (( blank > 0 )) && warn "  $blank cell(s) without a picture (no embedded JPEG, or the vault was not reachable)"
+  local dup; dup=$(awk -F'\t' '!/^#/ && $6 != "-"' "$tsv" | wc -l | tr -d ' ')
+  (( dup > 0 )) && echo -e "  ${GRAY}$dup frame(s) are archived in more than one place (column 6 of the TSV)${NC}"
+  (( store )) && sheet_store "$dir" "$name" "$vdir"
+  (( bad == 0 ))
+}
+
+# Copy a session's sheet and TSV beside its keepers: into the vault folder when
+# it is reachable here, or through vault_put when a build defines one.
+sheet_store() { # $1 dir  $2 name  $3 vault dir (with trailing /)
+  local f n=0
+  [ -n "$3" ] || return 0
+  for f in "$1/$2".jpg "$1/$2"-*.jpg "$1/$2.tsv"; do
+    [ -f "$f" ] || continue
+    if [ -d "$3" ]; then
+      cp -p "$f" "$3" 2>/dev/null || { warn "  Could not copy $(basename "$f") into $3"; continue; }
+    elif declare -F vault_put >/dev/null; then
+      vault_put "$f" "$3$(basename "$f")" || { warn "  Could not store $(basename "$f") at $3"; continue; }
+    else
+      continue
+    fi
+    n=$((n + 1))
+  done
+  if (( n > 0 )); then echo -e "  ${GRAY}→ $3 ($n file(s))${NC}"
+  else echo -e "  ${GRAY}Vault not connected: the sheet is in the session folder; run 'spoolr sheet' again to copy it over.${NC}"; fi
+  return 0
+}
+
+# Every frame whose exact bytes (sha256) are archived at more than one path,
+# across backups.tsv (and $COLDSTORE when set). A report for later decisions only.
+sheet_dupes_report() {
+  local tmp; tmp="$(mktemp_tracked)"
+  { awk -F'\t' '$3 != "" && $4 != "" {print $3 "\t" $4}' "$BACKUP_INDEX"
+    # An `if`, not `&&`: a false test as the group's last command fails the
+    # whole pipeline under pipefail, and set -e ends the script.
+    if [ -n "${COLDSTORE:-}" ] && [ -f "$COLDSTORE" ]; then
+      awk -F'\t' '$2 != "" && $3 != "" {print $2 "\t" $3}' "$COLDSTORE"
+    fi
+  } 2>/dev/null | sort -u | awk -F'\t' -v cs="${COLDSTORE:-}" '
+    BEGIN { if (cs != "") while ((getline l < cs) > 0) { split(l, c, "\t"); if (!(c[2] in fid)) fid[c[2]] = c[1] } }
+    { n[$1]++; p[$1] = p[$1] (p[$1] == "" ? "" : ",") $2 }
+    END { for (s in n) if (n[s] > 1) print ((s in fid) ? fid[s] : "-") "\t" s "\t" n[s] "\t" p[s] }' \
+    | sort > "$tmp"
+  { printf '# frames archived at more than one path (same sha256) · made %s · report only, nothing deleted\n' "$(date +%Y-%m-%d)"
+    printf '# frameid\tsha256\tcopies\tpaths\n'; cat "$tmp"; } > "$DUPES_REPORT"
+  local k; k=$(grep -c . "$tmp" || true)
+  echo ""
+  if (( k > 0 )); then echo -e "  ${BOLD}Duplicates:${NC} $k frame(s) are archived at more than one path. Listed in ${BOLD}$DUPES_REPORT${NC} (nothing deleted)."
+  else ok "Duplicates: every archived frame is stored once"; fi
+}
+
+run_sheet() {
+  local want="" all=0 force=0 store=1 a
+  for a in "$@"; do
+    case "$a" in
+      "") ;; --all) all=1 ;; --force) force=1 ;; --no-upload|--no-store) store=0 ;;
+      -*) die "Unknown option for sheet: $a" ;; *) want="$a" ;;
+    esac
+  done
+  sheets_available || die "Contact sheets need ImageMagick (brew install imagemagick)."
+  SHEET_REBUILT=0
+  if (( all )); then
+    local s rc=0 n=0
+    for s in $(awk -F'\t' '$4 != "" {print $1}' "$BACKUP_INDEX" | sort -u); do
+      awk -F'\t' -v s="$s" '$2==s{f=1} END{exit !f}' "$LEDGER" || continue
+      sheet_one "$s" "$force" "$store" || rc=1; n=$((n + 1))
+    done
+    echo ""; ok "$n session sheet(s) checked · $SHEET_REBUILT keeper(s) read back from the vault to build them (sha256-verified)"
+    sheet_dupes_report
+    return $rc
+  fi
+  local sid="$want"
+  if [ -z "$sid" ]; then
+    sid="$(awk -F'\t' 'NF>=6 && $2 ~ /^SES-/ {v=$2} END{print v}' "$LEDGER")"
+  elif [ -d "$sid" ]; then
+    local abs; abs="$(cd "$sid" && pwd)"
+    sid="$(awk -F'\t' -v d="$abs" 'NF>=6 && $6==d && $2 ~ /^SES-/ {v=$2} END{print v}' "$LEDGER")"
+  fi
+  sid="$(printf '%s' "$sid" | tr '[:lower:]' '[:upper:]')"
+  [[ "$sid" =~ ^SES-[0-9]+$ ]] || die "Say which session: spoolr sheet [SES-ID | folder | --all]"
+  awk -F'\t' -v s="$sid" '$2==s{f=1} END{exit !f}' "$LEDGER" || die "Unknown session: $sid"
+  sheet_one "$sid" "$force" "$store"
+}
+
+# `spoolr where SES-012#11`: which file #11 on that session's sheet is, and
+# where its archived copy is right now.
+where_frame() { # $1 SES-ID  $2 number  $3 as_json (0/1)
+  local sid n="$((10#$2))" dir tsv row
+  sid="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  dir="$(sheet_session_dir "$sid")"
+  [ -n "$dir" ] || die "Unknown session: $sid"
+  tsv="$dir/$(sheet_name "$sid").tsv"
+  if [ ! -f "$tsv" ]; then
+    local vd; vd="$(awk -F'\t' -v s="$sid" '$1==s && $4 != "" {v=$4} END{sub(/[^\/]*$/,"",v); print v}' "$BACKUP_INDEX")"
+    [ -n "$vd" ] && [ -f "$vd$(sheet_name "$sid").tsv" ] && tsv="$vd$(sheet_name "$sid").tsv"
+  fi
+  [ -f "$tsv" ] || die "$sid has no contact sheet yet (spoolr sheet $sid)."
+  row="$(awk -F'\t' -v n="$n" '!/^#/ && $1+0 == n {print; exit}' "$tsv")"
+  [ -n "$row" ] || die "$sid's sheet has no #$n."
+  local num fid fn sha vp also pg state
+  IFS=$'\t' read -r num fid fn sha vp also pg <<< "$row"
+  if [ -f "$vp" ]; then state="present"
+  elif [[ "$vp" == /* ]]; then state="not connected"
+  else state="remote"; fi
+  if [ "$3" = 1 ]; then
+    printf '{"id":"%s","n":%d,"frameid":"%s","file":"%s","sha256":"%s","vault_path":"%s","state":"%s"}\n' \
+      "$(json_escape "$sid")" "$n" "$(json_escape "$fid")" "$(json_escape "$fn")" "$sha" "$(json_escape "$vp")" "$state"
+    return 0
+  fi
+  echo ""
+  echo -e "  ${BOLD}#$n on $sid's sheet${NC}  $fid  ${GRAY}($fn)${NC}"
+  case "$state" in
+    present)         echo -e "  ${GREEN}✓${NC} $vp" ;;
+    "not connected") echo -e "  ${GRAY}·${NC} $vp ${GRAY}(that drive isn't connected)${NC}" ;;
+    *)               echo -e "  ${GRAY}☁${NC} $vp" ;;
+  esac
+  echo ""
+}
+
+# ═══════════════════════════════════════════════════════════════
 # 9c. WHERE — which copies of a session still exist, and on what
 # ═══════════════════════════════════════════════════════════════
 # The question the ledger could never answer before volume identity: for each
@@ -1665,6 +1968,9 @@ run_where() {
       *) want="$a" ;;
     esac
   done
+  if [[ "$want" =~ ^([Ss][Ee][Ss]-[0-9]+)#([0-9]+)$ ]]; then
+    where_frame "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "$as_json"; return
+  fi
   [ -s "$LEDGER" ] || { [ "$as_json" = 1 ] && printf '[]\n' || echo "  No sessions on record."; return 0; }
 
   local l_ts l_sid l_card l_dates l_frames l_dir l_status l_rest first=1
@@ -1732,6 +2038,7 @@ run_doctor() {
   fi
   command -v rsync    &>/dev/null; check "rsync (verified copy)" $? "— required"
   command -v exiftool &>/dev/null; check "exiftool (previews + dates)" $? "— recommended: brew install exiftool"
+  command -v magick   &>/dev/null; check "ImageMagick (contact sheets)" $? "— optional: brew install imagemagick"
   command -v sips     &>/dev/null; check "sips (fallback previews)" $? "— macOS built-in"
   command -v xattr &>/dev/null && command -v plutil &>/dev/null; check "xattr + plutil (Finder tags)" $? "— macOS built-in; read from the files, not Spotlight"
   command -v diskutil &>/dev/null; check "diskutil (safe eject)" $? "— macOS built-in"
@@ -1876,7 +2183,7 @@ EOF
 # ═══════════════════════════════════════════════════════════════
 # Every word the dispatcher knows. `spoolr <slug>` treats any OTHER single word
 # as a session slug, so this list is what stops a typo from starting a pull.
-KNOWN_COMMANDS="spool today name rename tag reveal open status backup stash reconcile restore redownload peel eject doctor probe volumes where set-vault reset version config ui help"
+KNOWN_COMMANDS="spool today name rename tag reveal open status backup stash reconcile restore redownload peel eject doctor probe volumes where set-vault reset version config ui help sheet"
 
 # The known command closest to $1 (case-insensitive Levenshtein), printed only
 # when it is close enough to be a typo: distance 1, or 2 for words of eight
@@ -1943,6 +2250,7 @@ main() {
     probe)        run_probe ;;
     volumes)      run_volumes ;;
     where)        shift || true; run_where "$@" ;;
+    sheet)        shift || true; run_sheet "$@" ;;
     set-vault)    shift || true; run_set_vault "${1:-}" ;;
     reset)        shift || true; run_reset "$@" ;;
     version|--version|-v) echo "spoolr v$VERSION" ;;
@@ -1988,6 +2296,8 @@ main() {
       echo "  spoolr restore [SES-ID] [dir] Re-download a past session's keepers off the card"
       echo "  spoolr restore --dry-run      Report what is still recoverable, copy nothing"
       echo "  spoolr where [SES-ID]         Where your frames are: staging / vault / both / neither"
+      echo "  spoolr where SES-ID#N         Which file #N on a session's contact sheet is, and where it lives"
+      echo "  spoolr sheet [SES-ID|--all]   Labelled contact sheet of a session's keepers (needs ImageMagick)"
       echo "  spoolr peel [folder]          Extract embedded JPEG previews for fast Finder tagging"
       echo "  spoolr eject                  Safely unmount active camera SD card"
       echo "  spoolr config                 Configure staging and backup vault directories"

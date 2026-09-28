@@ -58,7 +58,18 @@ SPOOLR mirrors physical hardware on screen. When you name a card, you assign it 
 ### 4. Disaster Recovery via Persistent Ledger
 If a staging drive dies or an external SSD gets dropped before the card is formatted, `spoolr restore` recovers the session keepers by SHA256 matching from the durable Mac ledger, even if the camera rolled over its filename counter (`DSC0001.ARW` collision). Almost no other tool does this.
 
-### 5. Architecture and Aesthetic: Zero Bloat Mac Native
+### 5. Contact Sheets: What You Kept, At a Glance
+Preview JPEGs are working copies. You post them, send them, and eventually delete them. Every archived session also gets a **contact sheet**: one small picture of its keepers, six across, each labelled with its number, capture date and card filename (`11  2026-09-17_P1300620`). It is saved in the session folder **and** beside the keepers in your vault, so the vault describes itself even when the Mac is gone.
+
+Next to it sits a TSV that is the source of truth: number, date and filename, SHA256, vault path, and any other place the same bytes are archived. See the frame, then ask where it lives:
+
+```bash
+spoolr where SES-012#11    # → 2026-09-17_P1300620 (P1300620.RW2) and its vault path
+```
+
+The sheet is a plain image, so it also works as a visual index you can hand to a vision model: "which one is the bus?" gets you "#08". Sheets are built automatically after `spoolr backup` when ImageMagick is installed (optional), and `spoolr sheet --all` builds them for past sessions, reading previews back out of the archived RAWs themselves (SHA256 checked) when the JPEGs are gone. The dashboard shows each session's sheet on its ledger card.
+
+### 6. Architecture and Aesthetic: Zero Bloat Mac Native
 * **No Electron:** Built entirely on Bash, Python standard library, and a single file vanilla HTML and CSS dashboard. It consumes negligible RAM, launches instantly, and has zero external npm or pip dependencies.
 * **Bento Box UI:** The tactile dark mode hardware aesthetic with LEDs, ignition sequence, card specific neon accents, and fill gauge gives you an appliance feel on `localhost:7331`.
 * **Finder Native Culling:** SPOOLR instantly peels embedded JPEGs from your RAWs so you can cull keepers with macOS Finder spacebar and native color tags (Green or Purple) without launching heavy catalog software.
@@ -158,6 +169,8 @@ spoolr where --json      # for scripts and the dashboard
 | `spoolr name <NAME>` | Set or rename the inserted card permanent identity |
 | `spoolr status` | Read only fill gauge, frame headroom, and run history |
 | `spoolr where [SES-ID]` | Locate a session: staging, vault, both, offline, neither |
+| `spoolr where SES-ID#N` | Which file frame #N on a session's contact sheet is, and where its archived copy lives |
+| `spoolr sheet [SES-ID\|--all]` | Build a session's contact sheet (automatic after `backup`; needs ImageMagick) |
 | `spoolr reveal` | Open the latest session folder in Finder, ready for tagging |
 | `spoolr backup [path]` | Copy keepers to the vault with read back SHA256 verification |
 | `spoolr reconcile [folder]` | Pre wipe verdict (re reads card and vault; card wide by default) |
@@ -178,6 +191,7 @@ Install is a one liner at the top of this page. If anything looks wrong afterwar
 
 * macOS with `bash`, `rsync`, and a SHA256 tool (all built in). SPOOLR prefers the native `/sbin/sha256sum` and falls back to `/usr/bin/shasum`.
 * **Recommended:** `brew install exiftool` for reliable embedded preview extraction and accurate shoot dates.
+* **Optional:** `brew install imagemagick` for contact sheets. Without it, everything else works exactly the same.
 * Python 3 (built in) for the dashboard.
 
 ---
@@ -191,6 +205,8 @@ All tracking data lives independently of any staging folder or card wipe:
 * `backups.tsv` (Per frame vault index: session, filename, sha256, vault path, timestamp)
 * `watermarks/<CARD_ID>.watermark` (Per card rolling watermark)
 * `<session>/.spoolr_manifest.tsv` (Per session manifest: filename, size, SHA256, source path, archive state)
+* `<session>/SES-NNN_contact-sheet.jpg` + `.tsv` (Contact sheet and its index; a copy of both sits beside the keepers in the vault)
+* `vault-duplicates.tsv` (Written by `spoolr sheet --all`: frames archived at more than one path. A report only; nothing is deleted)
 
 ### Environment Overrides
 
