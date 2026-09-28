@@ -1186,8 +1186,12 @@ run_reconcile() {
     echo -e "  ${GRAY}You may now format the card in your camera.${NC}\n"
     # mark verified sessions
     if [ -z "$FOLDER" ]; then
-      local tmp; tmp="$(mktemp_tracked)"
-      awk -F'\t' -v ids="$(printf '%s\n' "${FOLDERS[@]}")" 'BEGIN{OFS="\t"; n=split(ids,a,"\n"); for(k=1;k<=n;k++)v[a[k]]=1} {if($6 in v)$7="VERIFIED"} 1' "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
+      # The folder list goes in as a FILE: BSD awk rejects a -v value with a
+      # newline in it, so with two or more sessions the update used to fail
+      # and every SAFE verdict went unrecorded (the ledger stayed PENDING).
+      local tmp ids; tmp="$(mktemp_tracked)"; ids="$(mktemp_tracked)"
+      printf '%s\n' "${FOLDERS[@]}" > "$ids"
+      awk -F'\t' 'BEGIN{OFS="\t"} FILENAME==ARGV[1]{v[$0]=1; next} {if($6 in v)$7="VERIFIED"} 1' "$ids" "$LEDGER" > "$tmp" && mv "$tmp" "$LEDGER"
     fi
     export_state_json "safe"
   else

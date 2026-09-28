@@ -156,6 +156,20 @@ ck "an unknown word with more arguments still shows help" 'echo "$OUT" | grep -q
 ck "spoolr street pulls into a *_street session" '[ -n "$(ls -d "$HOME/Pictures/Spoolr"/*_SES-*_street 2>/dev/null)" ]'
 rm -rf "$NC4" "$HOME/Pictures/Spoolr"/*_street; mv "$ROOT/parkedS" "$CARD"
 
+say "reconcile records VERIFIED on every session it checked, not just one"
+NC6="$ROOT/volumes/MULTI"; mkdir -p "$NC6/DCIM/1"; echo MULTI > "$NC6/.card_id"
+mv "$CARD" "$ROOT/parkedM"
+head -c 5000 /dev/urandom > "$NC6/DCIM/1/M1.RW2"
+"$ING" --baseline=all >/dev/null 2>&1; "$ING" backup "$ROOT/mvault" >/dev/null 2>&1
+head -c 5001 /dev/urandom > "$NC6/DCIM/1/M2.RW2"
+"$ING" >/dev/null 2>&1; "$ING" backup "$ROOT/mvault" >/dev/null 2>&1
+OUT="$("$ING" reconcile 2>&1)"; rc=$?
+mrows(){ awk -F'\t' -v st="$1" '$3=="MULTI" && (st=="" || $7==st)' "$SPOOLR_CONFIG_DIR/ledger.tsv" | wc -l | tr -d ' '; }
+ck "SAFE across 2 sessions of one card" '[ "$rc" = 0 ] && [ "$(mrows "")" = 2 ]'
+ck "both sessions are recorded VERIFIED" '[ "$(mrows VERIFIED)" = 2 ]'
+ck "no awk error on the way" '! echo "$OUT" | grep -q "awk:"'
+rm -rf "$NC6" "$ROOT/mvault"; mv "$ROOT/parkedM" "$CARD"
+
 say "keepers come from the files' own Finder tags, not Spotlight"
 # $TMPDIR is never indexed by Spotlight, so the old mdfind query found no tags
 # here at all. A keeper list that is silently short is how reconcile says SAFE
